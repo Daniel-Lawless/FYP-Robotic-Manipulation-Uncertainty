@@ -69,6 +69,6 @@ $$
 
 **Concrete example**:
 
-![State transition diagram](../images/transition_diagram.png)
+<img src="../images/transition_diagram.png" alt="State transition diagram" width="400">
 
 
