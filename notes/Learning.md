@@ -69,15 +69,18 @@ $$
 
 **Concrete example**:
 
-<p align="center">
+<div align="center">
   <img src="../images/transition_diagram.png" alt="State transition diagram" width="500">
-</p>
+</div>
 
 Lets start with the case where we only care about the immediate reward, $\gamma = 0$. So we want to know the value of the states when $\gamma = 0, G_{t+1} = r_{t+1}$. So $V(s) = E[r_{t+1} | s_{t} = s]$. To find the mean of a discrete distribution we can use $\sum^{n}_{i=1}(\text{probability} \times \text{reward})$.
 
 $V(\text{chat}) = 0.5(-1) + 0.2(1) + 0.3(2) = 0.3$ 
+
 $V(\text{computer}) = 0.5(5) + 0.2(2) + 0.2(1) + 0.1(-3) = 2.8$ 
+
 $V(\text{coffee}) = 0.7(2) + 0.2(3) + 0.1(1) = 2.1$
+
 $V(\text{home}) = 0.6(1) + 0.4(1) = 1.0$
 
 So if we only care about immediate rewards, computer is the most valuable state to be in.
