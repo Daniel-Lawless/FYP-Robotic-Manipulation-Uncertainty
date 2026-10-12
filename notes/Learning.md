@@ -69,7 +69,6 @@ $$
 
 **Concrete example**:
 
-
-
+![State transition diagram](../images/transition_diagram.png)
 
 
