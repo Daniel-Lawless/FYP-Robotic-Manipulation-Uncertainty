@@ -143,7 +143,7 @@ state, given the current state and chosen action. The three graphs show these di
 means giving the corresponding Q-values.
 
 <div align="center">
-  <img src="../images/bellman_state_value_distribution.png" alt="Distribution over action values" width="800">
+  <img src="../images/bellman_state_value_distribution.png" alt="Distribution over action values" width="500">
 </div>
 
 Using the law of total expectation, we can obtain $V^{\pi}(s_{1})$ by taking a probability-weighted average of the three Q-values. Each Q-value is the mean of the possible 
