@@ -138,3 +138,13 @@ If we substitute the equation for $G_{t}$ we just came up with, we get
 $$
 V^{\pi}(s) = E_{\pi}[R_{t+1} + \gamma G_{t+1} | S_{t} = s]
 $$
+
+The law of total expectation allows us to calculate an overall mean by taking the mean within each group and then weighting those means by the probabilities of the groups. Here, we group the possible future returns according to the next state reached. Under the Markov property and a fixed policy $\pi$, the expected remaining return from $S_{t+1}$ is $V^\pi(S_{t+1})$. So we can replace $G_{t+1}$ inside the expectation with this mean, giving the Bellman expectation equation: 
+
+$$
+V^\pi(s)=E_\pi [R_{t+1}+\gamma V^\pi(S_{t+1}) | S_t=s]
+$$
+
+
+
+Each next-state value ($V^\pi(s')$) is itself a mean of possible future returns. We scale this mean by ($\gamma$) and shift it by the immediate reward received on the transition. For discrete outcomes, we can visualise a bar chart whose horizontal positions are the possible values of ($R_{t+1}+\gamma V^\pi(S_{t+1})$), with bar heights representing their probabilities. The probability-weighted mean of this distribution is ($V^\pi(s)$): a weighted “mean over means”, with rewards and discounting included. This lets us express the current state’s value using one-step outcomes while still accounting for all future rewards.
