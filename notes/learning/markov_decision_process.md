@@ -120,7 +120,9 @@ The expectation includes all possible first actions under policy $\pi$ and their
 
 #### Worked example
 
-<img src="images/bellman_transition_tree.png" alt="State transitions and action probabilities" width="1000">
+<div align="center">
+  <img src="../images/bellman_transition_tree.png" alt="State transitions and action probabilities" width="1000">
+</div>
 
 Suppose we are in state $s_{1}$, where three actions are available: $a_{1}$, $a_{2}$, and $a_{3}$. Our policy selects these actions with 
 probabilities $0.7$, $0.1$, and $0.2$, respectively. If we take action $a_{1}$, we reach $s_{2}$ with probability $0.3$,
@@ -130,7 +132,9 @@ and rewards for the other two actions are shown in the diagram. We will first ca
 reward plus the discounted next-state value for each action, giving its Q-value. We will then average these Q-values using the policy 
 probabilities to obtain $V^{\pi}(s_{1})$.
 
-<img src="images/bellman_action_value_charts.png" alt="Action-value distributions" width="1200">
+<div align="center">
+  <img src="../images/bellman_action_value_charts.png" alt="Action-value distributions" width="1200">
+</div>
 
 For each action, we can visualise a probability distribution over the immediate reward plus the discounted value of the next state, $R_{t+1}+\gamma V^{\pi}(S_{t+1})$.
 The Q-value is the mean of this distribution: we multiply each possible value $r+\gamma V^{\pi}(s')$ by the joint probability $p(s', r | s,a)$ of receiving that reward and
@@ -138,7 +142,9 @@ reaching that next state, then sum the results. In this example, the reward is f
 state, given the current state and chosen action. The three graphs show these distributions for actions $a_{1}$, $a_{2}$, and $a_{3}$, with their probability-weighted 
 means giving the corresponding Q-values.
 
-<img src="images/bellman_action_value_charts.png" alt="Action-value distributions" width="800>
+<div align="center">
+  <img src="../images/bellman_state_value_distribution.png" alt="Distribution over action values" width="800">
+</div>
 
 Using the law of total expectation, we can obtain $V^{\pi}(s_{1})$ by taking a probability-weighted average of the three Q-values. Each Q-value is the mean of the possible 
 returns grouped by a particular first action, and the probability of selecting that group is the policy probability $\pi(a_{i}\mid s_{1})$. We therefore multiply each Q-value 
