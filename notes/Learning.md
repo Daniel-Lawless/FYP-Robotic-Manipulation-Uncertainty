@@ -107,44 +107,110 @@ $$
 
 So for a given state, s, the policy gives a distribution over the actions we can take from that state, where actions are on the x-axis, and probability (denisty if a is continuous) is on the y-axis.
 
-### Bellman Equations
+### Value functions and Bellman expectation equations
 
-The bellman equations express a value of a state in terms of the immediate reward and the value of what comes next. They let us reason about long-term returns one transition at a time. 
+#### State Value Function
 
-The starting point is the return that we have just done.
-
-$$
-G_{t} = R_{t+1} + \gamma R_{t+2} + \gamma^{2} R_{t+3} + \cdots
-$$
-
-If we factor out $\gamma$, we get:
+$V^\pi(s)$ is the probability-weighted average of all possible returns $G_t$ when starting in state $s$ and following policy $\pi$. This includes all possible first actions selected by the policy and all possible outcomes afterwards.
 
 $$
-G_{t} = R_{t+1} + \gamma G_{t+1}
+V^\pi(s)=\mathbb{E}_\pi[G_t\mid S_t=s].
 $$
 
-This means the return at timestep t is the immediate reward from transitioning from $s_{t} \rightarrow s_{t + 1}$ + the discounted return from $s_{t+1}$ onwards.
+#### Action Value Function
 
-#### Bellman expectation equations
-
-The value for a given state s under a given policy $\pi$ is 
+$Q^\pi(s,a)$ is the probability-weighted average of all possible returns $G_t$ when starting in state $s$, taking action $a$, and following policy $\pi$ afterwards. The first action is fixed, but we still average over all possible outcomes and subsequent actions.
 
 $$
-V^{\pi}(s) = E_{\pi}[G_{t} | S_{t} = s]
+Q^\pi(s,a)=\mathbb{E}_\pi[G_t\mid S_t=s,A_t=a].
 $$
 
-If we substitute the equation for $G_{t}$ we just came up with, we get
+The distinction is that $V^\pi(s)$ averages the possible returns $G_t$ across all possible first actions under policy $\pi$, whereas $Q^\pi(s,a)$ averages the possible returns $G_t$ when the first action is fixed to $a$. Both averages account for all possible outcomes and subsequent actions, weighted by their probabilities.
+
+#### Connecting state values and action values
+
+Starting in state $s$, we can group the possible returns $G_t$ according to the first action taken. For each action $a$, the probability-weighted average of the returns in that group is $Q^\pi(s,a)$.
+
+To obtain $V^\pi(s)$, we average these Q-values, weighting each one by the probability $\pi(a\mid s)$ of choosing that first action:
 
 $$
-V^{\pi}(s) = E_{\pi}[R_{t+1} + \gamma G_{t+1} | S_{t} = s]
+V^{\pi} (s) = \sum_a \pi(a\mid s)Q^\pi(s,a).
 $$
 
-The law of total expectation allows us to calculate an overall mean by taking the mean within each group and then weighting those means by the probabilities of the groups. Here, we group the possible future returns according to the next state reached. Under the Markov property and a fixed policy $\pi$, the expected remaining return from $S_{t+1}$ is $V^\pi(S_{t+1})$. So we can replace $G_{t+1}$ inside the expectation with this mean, giving the Bellman expectation equation: 
+This is the law of total expectation: averaging the possible returns within each first-action group, then weighting those group means by the probabilities of choosing the actions, gives the same result as averaging all possible returns from $s$ directly.
+
+#### Expressing action values using the next state
+
+$Q^{\pi}(s,a)$ is the probability-weighted average of all possible returns $G_{t}$ when starting in state $s$, taking action $a$, and following policy $\pi$ afterwards:
 
 $$
-V^\pi(s)=E_\pi [R_{t+1}+\gamma V^\pi(S_{t+1}) | S_t=s]
+Q^{\pi}(s,a) = {E}_{\pi}[G_{t} | S_{t}=s,A_{t}=a].
 $$
 
+Each return consists of the immediate reward plus the discounted remaining return:
 
+$$
+G_{t} = R_{t+1} + \gamma G_{t+1}.
+$$
 
-Each next-state value ($V^\pi(s')$) is itself a mean of possible future returns. We scale this mean by ($\gamma$) and shift it by the immediate reward received on the transition. For discrete outcomes, we can visualise a bar chart whose horizontal positions are the possible values of ($R_{t+1}+\gamma V^\pi(S_{t+1})$), with bar heights representing their probabilities. The probability-weighted mean of this distribution is ($V^\pi(s)$): a weighted “mean over means”, with rewards and discounting included. This lets us express the current state’s value using one-step outcomes while still accounting for all future rewards.
+Substituting this gives:
+
+$$
+Q^{\pi}(s,a) =E_{\pi} [R_{t+1} + \gamma G_{t+1} | S_{t} = s,A_{t} = a].
+$$
+
+We can now group the possible returns according to the next state $s'$ reached and the immediate reward $r$ received. Within each group, the immediate reward is fixed. Under the Markov property, the probability-weighted average of the remaining returns $G_{t+1}$ is $V^{\pi}(s')$, since we follow policy $\pi$ from that next state onwards.
+
+The mean return within each group is therefore:
+
+$$
+r+\gamma V^{\pi}(s').
+$$
+
+Using the law of total expectation, we average these group means according to the probabilities of reaching their next states and receiving their rewards:
+
+$$
+Q^{\pi}(s,a) = \sum_{s',r}p(s',r\mid s,a)[r+\gamma V^{\pi}(s')].
+$$
+
+Equivalently, we can keep this in expectation notation:
+
+$$
+Q^{\pi}(s,a) = E_{\pi} [R_{t+1}+\gamma V^{\pi}(S_{t+1})\mid S_{t}=s,A_{t}=a].
+$$
+
+Both expressions give the same probability-weighted average as the original definition using $G_{t}$. We have grouped the possible returns and averaged within each group, allowing us to express the action value using the immediate reward and the values of the possible next states.
+
+#### The Bellman expectation equation for state values
+
+We have seen that $V^{\pi}(s)$ is the probability-weighted average of the Q-values for the available actions in state $s$:
+
+$$
+V^{\pi}(s) = \sum_{a}\pi(a\mid s)Q^{\pi}(s,a).
+$$
+
+We can now substitute our expression for each Q-value:
+
+$$
+V^{\pi}(s) =
+\sum_{a}\pi(a | s)
+\sum_{s',r}p(s',r | s,a)
+[r+\gamma V^{\pi}(s')].
+$$
+
+This is the Bellman expectation equation for state values. It calculates the average in two stages:
+
+1. For each possible first action $a$, average $r+\gamma V^{\pi}(s')$ over the possible next states and rewards, weighted by $p(s',r\mid s,a)$. This gives $Q^{\pi}(s,a)$.
+2. Average these Q-values, weighting each one by the probability $\pi(a\mid s)$ of choosing that first action. This gives $V^{\pi}(s)$.
+
+Equivalently, we can write:
+
+$$
+V^{\pi}(s)= E_{\pi}[R_{t+1}+\gamma V^{\pi}(S_{t+1}) | S_{t}=s].
+$$
+
+The expectation includes all possible first actions under policy $\pi$ and their possible next states and rewards. It gives the same probability-weighted average of returns $G_{t}$ as our original definition of $V^{\pi}(s)$, now expressed using immediate rewards and next-state values.
+
+#### Worked example
+
+Consider a state $s_1$ with three available actions, $a_1$, $a_2$, and $a_3$. We will first calculate the value of each action, then combine those values using the policy probabilities to find $V^\pi(s_1)$.
