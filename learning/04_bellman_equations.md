@@ -220,15 +220,16 @@ $$
 V_{\pi}(s)=\sum_a\pi(a\mid s)Q_{\pi}(s,a)
 $$
 
-However, for the optimal state value, we select the action with the highest optimal Q-value:
-
-$$
-V_*(s_1)=\max\{Q_*(s_1,a_1),Q_*(s_1,a_2),Q_*(s_1,a_3)\}
-$$
+However, for the optimal state value, we instead select the action with the highest optimal Q-value, as illustrated below:
 
 <div align="center">
-  <img src="../images/selecting_the_optimal_action.png" alt="Selecting the action with the highest optimal Q-value" width="1100">
+  <img src="../images/selecting_the_optimal_action.png" alt="Selecting the optimal action" width="600">
 </div>
+
+The numerical Q-values are illustrative rather than calculated from the preceding transition tree.
+
+Unlike the Bellman expectation equation, we no longer average over actions according to a fixed policy. Instead, we maximise over the available actions, while still averaging over the environment's possible outcomes.
+
 
 The graph illustrates how an optimal policy selects the action with the highest expected cumulative discounted return. The numerical Q-values are illustrative, rather than calculated from the preceding transition tree.
 
