@@ -186,7 +186,7 @@ These are the Bellman optimality equations for action values. We still average o
 #### Worked example
 
 <div align="center">
-  <img src="../images/bellman_transition_tree_diagram_no_action_probabilities.png" alt="Bellman optimality transition tree" width="1100">
+  <img src="../images/bellman_transition_tree_diagram_no_action_probabilities.png" alt="Bellman optimality transition tree" width="1000">
 </div>
 
 Consider starting in state $s_1$, where three actions are available: $a_1$, $a_2$, and $a_3$.
@@ -205,7 +205,7 @@ $$
 We can visualise this calculation for all three actions:
 
 <div align="center">
-  <img src="../images/bellman_optimal_action_value_charts.png" alt="Optimal action-value distributions" width="1300">
+  <img src="../images/bellman_optimal_action_value_charts.png" alt="Optimal action-value distributions" width="1200">
 </div>
 
 Each graph represents a probability distribution over $R_{t+1}+\gamma V_*(S_{t+1})$. Its probability-weighted mean gives the corresponding optimal Q-value.
@@ -223,7 +223,7 @@ $$
 However, for the optimal state value, we instead select the action with the highest optimal Q-value, as illustrated below:
 
 <div align="center">
-  <img src="../images/selecting_the_optimal_action.png" alt="Selecting the optimal action" width="600">
+  <img src="../images/selecting_the_optimal_action.png" alt="Selecting the optimal action" width="500">
 </div>
 
 The numerical Q-values are illustrative rather than calculated from the preceding transition tree.
