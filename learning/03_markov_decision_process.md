@@ -18,30 +18,30 @@ So for a given state, s, the policy gives a distribution over the actions we can
 
 #### State Value Function
 
-$V^{\pi}(s)$ is the probability-weighted average of all possible returns $G_{t}$ when starting in state $s$ and following policy $\pi$. This includes all possible first actions selected by the policy and all possible outcomes afterwards.
+$v_{\pi}(s)$ is the probability-weighted average of all possible returns $G_{t}$ when starting in state $s$ and following policy $\pi$. This includes all possible first actions selected by the policy and all possible outcomes afterwards.
 
 $$
-V^{\pi} = E_{\pi}[G_{t} | S_{t} = s]
+v_{\pi} = E_{\pi}[G_{t} | S_{t} = s]
 $$
 
 #### Action Value Function
 
-$Q^{\pi}(s,a)$ is the probability-weighted average of all possible returns $G_{t}$ when starting in state $s$, taking action $a$, and following policy $\pi$ afterwards. The first action is fixed, but we still average over all possible outcomes and subsequent actions.
+$q_{\pi}(s,a)$ is the probability-weighted average of all possible returns $G_{t}$ when starting in state $s$, taking action $a$, and following policy $\pi$ afterwards. The first action is fixed, but we still average over all possible outcomes and subsequent actions.
 
 $$
-Q^{\pi}(s,a) = E_{\pi}[G_{t} | S_{t} = s, A_{t} = a]
+q_{\pi}(s,a) = E_{\pi}[G_{t} | S_{t} = s, A_{t} = a]
 $$
 
-The distinction is that $V^{\pi}(s)$ averages the possible returns $G_{t}$ across all possible first actions under policy $\pi$, whereas $Q^{\pi}(s,a)$ averages the possible returns $G_{t}$ when the first action is fixed to $a$. Both averages account for all possible outcomes and subsequent actions, weighted by their probabilities.
+The distinction is that $v_{\pi}(s)$ averages the possible returns $G_{t}$ across all possible first actions under policy $\pi$, whereas $q_{\pi}(s,a)$ averages the possible returns $G_{t}$ when the first action is fixed to $a$. Both averages account for all possible outcomes and subsequent actions, weighted by their probabilities.
 
 #### Connecting state values and action values
 
-Starting in state $s$, we can group the possible returns $G_{t}$ according to the first action taken. For each action $a$, the probability-weighted average of the returns in that group is $Q^{\pi}(s,a)$.
+Starting in state $s$, we can group the possible returns $G_{t}$ according to the first action taken. For each action $a$, the probability-weighted average of the returns in that group is $q_{\pi}(s,a)$.
 
-To obtain $V^{\pi}(s)$, we average these Q-values, weighting each one by the probability $\pi (a | s)$ of choosing that first action:
+To obtain $v_{\pi}(s)$, we average these Q-values, weighting each one by the probability $\pi (a | s)$ of choosing that first action:
 
 $$
-V^{\pi} (s) = \sum_{a} \pi(a | s) Q^{\pi}(s,a)
+v_{\pi} (s) = \sum_{a} \pi(a | s) q_{\pi}(s,a)
 $$
 
 This is the law of total expectation: averaging the possible returns within each first-action group, then weighting those group means by the probabilities of choosing the actions, gives the same result as averaging all possible returns from $s$ directly.
