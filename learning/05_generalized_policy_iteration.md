@@ -4,9 +4,9 @@
 
 Policy Evaluation refer to computing the state-value function, $v_{\pi}(s)$, or the action-value function, $q_{\pi}(s, a)$ for a given policy $\pi$ for all states or state action pairs for some MDP.
 
-<p align="center">
+<div align="center">
   <img src="../images/gridworld_rules.png" alt="Gridworld with 16 states" width="550">
-</p>
+</div>
 
 Say we have 16 states, of which 2 are terminal states. We have 4 actions available in each state, up, right, down, left which will move the agent to its corresponding neighbouring state, unless that state is off the grid, in that case it will remain in the same state.
 
