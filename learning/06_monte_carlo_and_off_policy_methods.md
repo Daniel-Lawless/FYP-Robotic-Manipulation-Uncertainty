@@ -20,7 +20,7 @@ We can think of a model as anything the agent uses to predict how the environeme
 
 - **Model-Free methods:** These are methods that do not use a model. They instead learn associations between actions and returns
 
-Monte Carlo methods are model free, they do not use a model to predict how the environement will respond to actions. Because of this, we need to estimate action values instead of state values. To see this, lets say we estimated $v_{*}(s)$ with $V(s)$. To find the max-value action, we still have to form an estimate of q_{*}(s,a):
+Monte Carlo methods are model free, they do not use a model to predict how the environement will respond to actions. Because of this, we need to estimate action values instead of state values. To see this, lets say we estimated $v_{*}(s)$ with $V(s)$. To find the max-value action, we still have to form an estimate of $q_{*}(s,a)$:
 
 $$
 Q(s,a) = \sum_{s' \in S, r \in R} p(s', r | s, a) [r + \gamma V(s')]
@@ -211,13 +211,13 @@ $$
 Q_{\pi}(s_{1},a_{1}) = 4.75
 $$
 
-The difference is that we calculated the average incrementally, without needing to store all the previous returns or wait until all $M$ trajectories had been collected.
+The difference is that we calculated the average incrementally, without needing to store all the previous returns or wait until all $M$ trajectories had been collected. Of course, we do this for all states.
 
 As we collect more samples, $C(s,a)$ increases, meaning the term $\frac{1}{C(s,a)}$ becomes smaller. This means each new return has a smaller influence on our current estimate, making it progressively more stable as we observe more returns. Although returns from earlier trajectories can cause larger changes to our estimate, they do not have more weight in the final result. Since we are computing the average incrementally, every observed return contributes equally to our final estimate.
 
 One important detail is that we still need each trajectory to finish before calculating its returns, since the return $g^{m}_{\tau}$ depends on the rewards received from time step $\tau$ until the end of that trajectory. However, once these returns become available, we can immediately use them to update our estimate.
 
-#### Constant-$\alpha$ Monte Carlo
+#### Constant-α Monte Carlo
 
 Previously, we used $\frac{1}{C(s,a)}$ as our step size when updating our estimate. However, we can instead replace this with a constant step size $\alpha$, giving us:
 
@@ -259,4 +259,221 @@ As an observation gets older, $n-i$ becomes larger, meaning its weight decreases
 
 Therefore, unlike ordinary incremental averaging, constant-$\alpha$ Monte Carlo gives greater weight to more recent observations. This can be particularly useful in non-stationary environments, where the expected returns may change over time, since our estimate can adapt to newer observations instead of being heavily influenced by old ones.
 
-One important consequence is that constant-$\alpha$ Monte Carlo no longer computes the exact arithmetic average of all observed returns. Instead, it maintains a recency-weighted estimate.
+One important consequence is that constant-$\alpha$ Monte Carlo no longer computes the exact arithmetic average of all observed returns. Instead, it maintains a recency-weighted estimate. In general, the value of $\alpha$ is problem dependent.
+
+#### Monte Carlo Control
+
+So far, we have used Monte Carlo methods for policy evaluation, where we estimate the value of each state-action pair, $q_{\pi}(s,a)$, under a given policy $\pi$.
+
+Monte Carlo control extends this by introducing policy improvement, allowing us to learn increasingly better policies. The process involves:
+
+Policy evaluation: Generate episodes using the current policy $\pi$ and use the observed returns to estimate the action values $Q(s,a)$.
+
+Policy improvement: Use these estimates to improve the policy by favouring actions with higher estimated returns.
+
+Repeat: Continue evaluating and improving the policy, ideally converging towards the optimal policy $\pi_*$.
+
+However, this introduces an important problem. If we always select the action with the highest estimated value, we might never discover that another action is actually better.
+
+##### Exploration vs Exploitation Trade-off
+
+To discover an optimal policy, we must sufficiently explore the available state-action pairs. However, to achieve high returns, we must also exploit actions that we already know have high values.
+
+The question becomes: how do we balance these two objectives such that we explore enough to discover better actions, while still making use of what we already know? This is known as the exploration–exploitation trade-off, and finding effective ways to balance the two remains an important area of research.
+
+Let's pretend we have an infinite amount of data. In principle, we can discover the optimal policy, $\pi_*$, if we ensure that every relevant state-action pair continues to be explored sufficiently.
+
+One way to encourage this is through a soft policy. A soft policy assigns a non-zero probability to every available action in every non-terminal state:
+
+$$
+\pi(a | s) > 0, \quad \forall s \in S,\quad \forall a \in A(s)
+$$
+
+This is important because, assuming states are reachable and visited sufficiently often, we can eventually observe returns for every available state-action pair. We can therefore estimate their $q_{\pi}(s,a)$ values and use policy improvement to favour actions with higher expected returns.
+
+However, there is one important distinction: a permanently soft policy does not necessarily converge to the optimal deterministic policy, because it must continue assigning some probability to suboptimal actions.
+
+Ideally, we want to maintain exploration while learning, but gradually favour the best actions as our estimates become more accurate. This motivates methods such as $\epsilon$-greedy policies, where we balance exploration and exploitation by controlling how frequently we select a random action.
+
+
+
+##### ε-greedy Monte Carlo Control
+
+In Monte Carlo control, we generate an episode, update our Q-value estimates using the observed returns, then improve our policy. ε-greedy balances exploiting the best-known action with exploring alternatives.
+
+With a single best action, the policy is:
+
+$$
+\pi(a | s) =
+\begin{cases}
+1 - \epsilon + \frac{\epsilon}{|A(s)|}, & \text{if } a = \arg\max_{a'} Q(s,a') \\
+\frac{\epsilon}{|A(s)|}, & \text{otherwise}
+\end{cases}
+$$
+
+Here, $|A(s)|$ is the number of available actions in state $s$. If $m$ actions tie for the highest Q-value, we break ties uniformly: each tied action receives $\frac{1-\epsilon}{m} + \frac{\epsilon}{|A(s)|}$, while every other action receives $\frac{\epsilon}{|A(s)|}$.
+
+**Example:**
+
+Start in $s_{0}$ with actions $a_{1},a_{2},a_{3}$ and $Q(s_{0},a_{i})=0$ (zero is a common initialisation, not a requirement). All actions tie, so each initially has probability $1/3$.
+
+Suppose our first episode begins with $a_{1}$ and produces return $g_{0}=5$. The first-visit Monte Carlo update gives:
+
+$$
+Q(s_{0},a_{1}) \leftarrow 0 + \frac{1}{1}(5-0) = 5
+$$
+
+With $\epsilon=0.1$, policy improvement makes $a_{1}$ the preferred action:
+
+$$
+\pi(a_{1} | s_{0}) = 0.9 + \frac{0.1}{3} = 0.9333
+$$
+
+$$
+\pi(a_{2} | s_{0}) = \pi(a_{3} | s_{0}) = \frac{0.1}{3} = 0.0333
+$$
+
+We update the policy probabilities, rather than selecting another action during improvement. Future episodes mostly exploit $a_{1}$ but sometimes explore $a_{2}$ or $a_{3}$. We repeat episode generation, Q-value updates, and policy improvement.
+
+**Why is this useful?**
+
+Imagine that the true optimal action values are:
+
+$$
+q_{*}(s_{0},a_{1})=5, \quad q_{*}(s_{0},a_{2})=10, \quad q_{*}(s_{0},a_{3})=2
+$$
+
+We don't know these values. Our Q-table currently favours $a_{1}$ because it's the only action we've sampled. But exploration may eventually select $a_{2}$, and sufficiently high observed returns could make its estimated Q-value exceed that of $a_{1}$. During policy improvement, $a_{2}$ would then become our preferred action.
+
+That's why we keep exploring even after finding an apparently good action.
+
+
+#### On-Policy ε-Greedy Monte Carlo Control (Constant-α)
+
+Putting all this together, we get this algorithm:
+
+**Algorithm inputs:**
+
+$\epsilon > 0, \qquad \alpha \in (0,1], \qquad M \in \mathbb{N}$
+
+**Initialise arbitrarily:**
+
+$\quad \pi \leftarrow \text{some } \epsilon\text{-soft policy}$
+
+$\quad Q(s,a) \leftarrow \text{some value for } s \in S,\ a \in A(s)$
+
+**For $m = 1, \ldots, M$:**
+
+$\quad$ Under $\pi$, sample an episode: $\quad s_{0}^{m}, a_{0}^{m}, r_{1}^{m}, \ldots, a_{T_{m}-1}^{m}, r_{T_{m}}^{m}$
+
+$\quad$ For $t = 0, \ldots, T_{m}-1$:
+
+$\qquad g_{t}^{m} \leftarrow r_{t+1}^{m} + \gamma r_{t+2}^{m} + \gamma^{2}r_{t+3}^{m} + \ldots$
+
+$\qquad Q(s_{t}^{m},a_{t}^{m}) \leftarrow Q(s_{t}^{m},a_{t}^{m}) + \alpha \left(g_{t}^{m} - Q(s_{t}^{m},a_{t}^{m})\right)$
+
+$\qquad \pi \leftarrow \epsilon\text{-greedy}(Q)$
+
+### On-policy and Off-policy methods
+
+So far, we have been looking at on-policy methods. Our policy has been playing two roles, and we can see it explicitly in the psuedocode for the algorithm we just described.
+
+Here it was used to produce and episode:
+
+$$
+\text{Under } \pi, \text{ sample an episode: } \quad s_{0}^{m}, a_{0}^{m}, r_{1}^{m}, \ldots, a_{T_{m}-1}^{m}, r_{T_{m}}^{m}
+$$
+
+And here it is returned 
+
+$$
+\qquad \pi \leftarrow \epsilon\text{-greedy}(Q)
+$$
+
+for off-policy methods, these rules are seperated. We have one policy, the behaviour policy, that is used to generate the data (the trajectory), which we'll call $b(a | s)$
+
+The target policy is the policy we would like to iteratively improve and evaluate so it can approximate the optimal policy, we will refer to this using the notation we have already been using, $\pi(a | s)$
+
+For on-policy methods $b = \pi$, the policy that generates the data is also the one we want to iteratively improve. For off-policy methods $b \neq \pi$, the policy that generates the data is different to the one we want to iteratively improve.
+
+If we're only familar with on-policy methods, then if we were to start at a new job where previous data has already been generated, then we would need to throw all this data away, since the data was not generated by some policy iteration strategy we were yet to create. This is, of course, not practical, since we would like to use this data. This is where off-policy methods become useful.
+
+**Adjustments needed for off-policy:**
+
+We want 
+
+$$
+q_{\pi}(s,a) = E_{\pi}[G_{t} | S_{t} = s, A_{t} = a]
+$$
+
+the q value of taking action a in state s under our target policy $\pi$. However, our data is under b. So, without any adjustments, if we used monte carlo control, we would be estimating 
+
+$$
+E_{b}[G_{t} | S_{t} = s, A_{t} = a]
+$$
+
+the expected return under b. To combat this, we use importance sampling, which I will dive deeper into shortly in a future file. We can use this to estimate the expectation of one distribution using samples from another. Using this, we get:
+
+$$
+q_{\pi}(s, a) = E_{b}[\frac{p_{\pi}(G_{t})}{p_{b}(G_{t})} G_{t} | S_{t} = s, A_{t} = a]
+$$
+
+So we weight each return by the ratio of the probability of that return occuring under policy b divided by the the probability of that return occuring under policy $\pi$. We will call this ratio: 
+
+$$
+\rho = \frac{p_{\pi}(G_{t})}{p_{b}(G_{t})} = \prod^{T - 1}_{\tau = t + 1}\frac{\pi(A_{t} | S_{t})}{b(A_{t} | S_{t})}
+$$
+
+Next, we also need coverage. Coverage means if the target policy $\pi$ might take a specific action in a given state, $\pi (s | a) > 0$, then so must the behaviour policy $b (s | a) > 0$ this ensures that we wont have zero data in places where the target policy could end up.
+
+**Example: When coverage is violated**
+
+Suppose we have the following target and behaviour policies in state $s_{0}$:
+
+| Action | Target policy $\pi(a \| s_{0})$ | Behaviour policy $b(a \| s_{0})$ |
+|---|---:|---:|
+| $a_{1}$ | 0.8 | 1.0 |
+| $a_{2}$ | 0.2 | 0 |
+| $a_{3}$ | 0 | 0 |
+
+Coverage is now violated. Our target policy sometimes selects $a_{2}$, but our behaviour policy never does.
+
+**Why is this a problem?**
+
+Iin off-policy Monte Carlo, we want to estimate the action values of our target policy $\pi$ using episodes generated by our behaviour policy $b$.
+
+Suppose selecting $a_{2}$ leads to a very high reward.
+
+If $b(a_{2} | s_{0}) = 0$, we will never observe that action in state $s_{0}$.
+
+Therefore, we have no experience from which to estimate what happens when our target policy selects $a_{2}$.
+
+#### Off-Policy Monte Carlo Control (Constant-α)
+
+With these modifications, we can change the previous algorithm to be off-policy:
+
+**Algorithm inputs:**
+
+$b, \qquad \alpha \in (0,1], \qquad M \in \mathbb{N}$
+
+**Initialise arbitrarily:**
+
+$\quad \pi \leftarrow \text{some policy}$
+
+$\quad Q(s,a) \leftarrow \text{some value for } s \in S,\ a \in A(s)$
+
+**For $m = 1, \ldots, M$:**
+
+$\quad$ Under $b$, sample an episode: $\quad s_{0}^{m}, a_{0}^{m}, r_{1}^{m}, \ldots, a_{T_{m}-1}^{m}, r_{T_{m}}^{m}$
+
+$\quad$ For $t = 0, \ldots, T_{m}-1$:
+
+$\qquad \rho_{t}^{m} \leftarrow \prod_{\tau=t+1}^{T_{m}-1} \frac{\pi(a_{\tau}^{m} | s_{\tau}^{m})}{b(a_{\tau}^{m} | s_{\tau}^{m})}$
+
+$\qquad g_{t}^{m} \leftarrow \rho_{t}^{m}(r_{t+1}^{m} + \gamma r_{t+2}^{m} + \gamma^{2}r_{t+3}^{m} + \ldots)$
+
+$\qquad Q(s_{t}^{m},a_{t}^{m}) \leftarrow Q(s_{t}^{m},a_{t}^{m}) + \alpha \left(g_{t}^{m} - Q(s_{t}^{m},a_{t}^{m})\right)$
+
+$\qquad \pi(s_{t}^{m}) \leftarrow \arg\max_{a} Q(s_{t}^{m},a) \quad \text{(ties broken arbitrarily)}$
+
+Unlike on-policy control, we do not use $\epsilon$-greedy policy improvement because exploration is handled by the behaviour policy $b$. This allows our target policy $\pi$ to be completely greedy, selecting the action with the highest estimated Q-value in each state, while $b$ continues exploring. We must ensure that $b$ provides coverage of the target policy.
