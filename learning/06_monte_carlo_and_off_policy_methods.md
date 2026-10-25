@@ -104,7 +104,7 @@ Here, $C(s,a)$ is the total number of times the state-action pair $(s,a)$ appear
 **Example:**
 
 <div align="center">
-  <img src="../images/trajectory_diagram.png" alt="Monte Carlo trajectories" width="850">
+  <img src="../images/trajectory__diagram.png" alt="Monte Carlo trajectories" width="850">
 </div>
 
 Let us estimate the value of the state-action pair $(s_{1},a_{1})$.
