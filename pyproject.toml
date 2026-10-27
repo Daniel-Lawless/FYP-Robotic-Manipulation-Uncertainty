@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot-uncertainty"
+version = "0.1.0"
+description = "Ensemble uncertainty for failure detection and intervention in robotic manipulation"
+requires-python = ">=3.10"
+authors = [{ name = "Daniel Lawless" }]
+dependencies = [
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# robosuite 1.5.2 breaks on MuJoCo >= 3.10 (tested Oct 2026), hence the cap.
+sim = ["robosuite>=1.5,<1.6", "mujoco>=3.3,<3.10", "gymnasium"]  # Stage 1
+ml = ["torch"]                                       # Stage 2
+rl = ["sb3-contrib"]                                 # Stage 3
+analysis = ["scikit-learn", "scipy", "matplotlib"]   # Stages 4-5
+dev = ["pytest", "ruff"]
+all = ["robot-uncertainty[sim,ml,rl,analysis,dev]"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

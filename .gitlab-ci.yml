@@ -1,0 +1,21 @@
+# Lightweight checks only: no MuJoCo, PyTorch, training or long simulations.
+# Tests under tests/sim/ need MuJoCo and are run locally instead.
+image: python:3.12-slim
+
+stages:
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+test:
+  stage: test
+  script:
+    - python -m pip install --upgrade pip
+    - python -m pip install -e ".[dev]"
+    - ruff check src tests scripts
+    - pytest --ignore=tests/sim
