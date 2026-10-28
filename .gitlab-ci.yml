@@ -1,5 +1,6 @@
 # Lightweight checks only: no MuJoCo, PyTorch, training or long simulations.
-# Tests under tests/sim/ need MuJoCo and are run locally instead.
+# Tests under tests/sim/ need MuJoCo and are run locally instead. The analysis extra
+# (Matplotlib) lets the figures be re-rendered from the committed data/validation CSVs.
 image: python:3.12-slim
 
 stages:
@@ -16,6 +17,6 @@ test:
   stage: test
   script:
     - python -m pip install --upgrade pip
-    - python -m pip install -e ".[dev]"
+    - python -m pip install -e ".[dev,analysis]"
     - ruff check src tests scripts
     - pytest --ignore=tests/sim
