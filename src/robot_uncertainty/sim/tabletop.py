@@ -261,12 +261,13 @@ class TabletopEnv(ManipulationEnv):
 
 
 def grasp_block_from_above(
-    env: TabletopEnv, name: str, grasp_height: float | None = None
+    env: TabletopEnv, name: str, grasp_height: float | None = None, lift_height: float = 0.10
 ) -> GraspResult:
     """Observe a block and run the scripted top grasp on it, planned from the observation.
 
     The grasp height comes from the observed block height (top_grasp_height) unless
-    given; success is still judged from the true state inside top_grasp.
+    given; lift_height is how far the grasp point is raised. Success is still judged
+    from the true state inside top_grasp.
     """
     target = env.observe().object(name)
     if grasp_height is None:
@@ -278,6 +279,7 @@ def grasp_block_from_above(
         env.block_body(name),
         symmetry=cross_section_symmetry(target.size),
         grasp_height=grasp_height,
+        lift_height=lift_height,
     )
 
 

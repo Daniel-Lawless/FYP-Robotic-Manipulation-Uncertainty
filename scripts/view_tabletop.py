@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 
+from robot_uncertainty.sim.pick_place import PickPlaceResult, pick_and_place
 from robot_uncertainty.sim.primitives import GraspResult, settle
 from robot_uncertainty.sim.tabletop import TabletopEnv, grasp_block_from_above, make_tabletop_env
 
@@ -105,11 +106,44 @@ def report(result: GraspResult) -> None:
     print(f"  {result.control_steps} control steps, {result.sim_time:.2f} s simulated")
 
 
+def report_pick_place(result: PickPlaceResult) -> None:
+    verdict = "PLACED IN THE GOAL" if result.success else f"FAILED: {result.failure_reason}"
+    print(f"\nResult: {verdict}")
+    for p in result.phases:
+        status = "reached" if p.reached else "TIMED OUT"
+        print(f"  {p.name:<9} {status:<9} {p.steps:>3} steps, pos err {1000 * p.pos_error:5.1f} mm")
+    pl = result.placement
+    print(
+        f"  grasp {'verified' if result.grasp_success else 'NOT verified'}, "
+        f"released {result.released}, dropped {result.dropped}"
+    )
+    print(
+        f"  block centre {1000 * pl.centre_error:.1f} mm from the goal centre; every corner "
+        f"inside the circle by at least {1000 * pl.goal_margin:.1f} mm"
+        if pl.in_goal
+        else f"  block outside the goal circle by {-1000 * pl.goal_margin:.1f} mm"
+    )
+    print(
+        f"  tilt {np.degrees(pl.tilt):.2f} deg, upright {pl.upright}, on the table "
+        f"{pl.on_table}, at rest {pl.at_rest}"
+    )
+    contacts = [f"{e.pair} during {e.phase}" for e in result.unintended_contacts]
+    print(f"  unintended contacts: {', '.join(contacts) or 'none'}")
+    print(f"  {result.control_steps} control steps, {result.sim_time:.2f} s simulated")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Watch the top grasp in the tabletop scene in MuJoCo's viewer."
+        description="Watch the top grasp or pick-and-place in the tabletop scene in MuJoCo's "
+        "viewer."
     )
     parser.add_argument("--seed", type=int, default=0, help="scene seed (default 0)")
+    parser.add_argument(
+        "--task",
+        choices=("grasp", "pick-place"),
+        default="grasp",
+        help="grasp and lift only (default), or the full pick-and-place into the goal",
+    )
     parser.add_argument(
         "--speed", type=float, default=1.0, help="playback speed; 1 is real time, 0.5 half"
     )
@@ -134,10 +168,12 @@ def main() -> None:
         )
         show_scene(env, START_PAUSE)
         pace(env, args.speed)
-        print(f"Settling and grasping at {args.speed:g}x real time ...")
+        print(f"Settling and running the {args.task} at {args.speed:g}x real time ...")
         settle(env)
-        result = grasp_block_from_above(env, TARGET)
-        report(result)
+        if args.task == "grasp":
+            report(grasp_block_from_above(env, TARGET))
+        else:
+            report_pick_place(pick_and_place(env, TARGET))
         print("\nFinal state shown; close the window or press Ctrl+C to exit.")
         while viewer_is_open(env):
             time.sleep(0.05)
