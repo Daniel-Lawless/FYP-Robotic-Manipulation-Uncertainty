@@ -14,6 +14,12 @@ GRIPPER_OPEN, GRIPPER_CLOSED = -1.0, 1.0
 # down and fingers closing along world x. Other yaws rotate this about world z.
 TOP_DOWN = np.diag([1.0, -1.0, -1.0])
 
+# Distance from the grip site back along the approach axis to the nearest point of the
+# Panda hand's palm collision mesh (31.0 mm, measured from the robosuite 1.5.2 model;
+# checked by tests/sim/test_tabletop.py). An object taller than this, gripped at its
+# centre, would have its top face under the palm.
+PALM_DEPTH = 0.031
+
 
 def wrap_angle(angle: float, period: float = 2 * np.pi) -> float:
     """Wrap an angle into [-period/2, period/2)."""
@@ -52,6 +58,17 @@ def aligned_grasp_yaw(object_yaw: float, current_yaw: float, symmetry: float = n
     return current_yaw + wrap_angle(object_yaw - current_yaw, symmetry)
 
 
+def top_grasp_height(object_height: float, palm_clearance: float = 0.006) -> float:
+    """Height of a top grasp point above an upright object's centre.
+
+    Grip at the centre unless that would bring the palm within palm_clearance of the
+    object's top face; then grip just high enough to keep that gap. Zero for objects up
+    to 50 mm tall (the Lift cube), 15 mm for the 80 mm block. The descend phase may stop
+    up to its 5 mm tolerance short of the grasp point, which only adds clearance.
+    """
+    return max(0.0, object_height / 2 - PALM_DEPTH + palm_clearance)
+
+
 @dataclass
 class PhaseResult:
     """One attempted movement; reached=False means it timed out."""
@@ -85,6 +102,7 @@ class GraspResult:
     control_steps: int = 0
     sim_time: float = 0.0  # simulated seconds
     wall_time: float = 0.0  # seconds
+    grasp_height: float = 0.0  # grasp point above the observed object centre, metres
 
     @property
     def lift_height(self) -> float:
@@ -194,16 +212,19 @@ def top_grasp(
     pregrasp_height: float = 0.10,
     lift_height: float = 0.10,
     min_lift: float = 0.05,
+    grasp_height: float = 0.0,
 ) -> GraspResult:
     """Grasp an object from above at its observed pose and lift it.
 
     Phases: open the gripper; move above the object while turning the fingers onto a
-    pair of opposing faces; descend to its centre; close; lift; hold. object_pos and
-    object_yaw (a face-normal heading, see box_yaw) are what the robot believes (for
+    pair of opposing faces; descend to the grasp point; close; lift; hold. object_pos
+    and object_yaw (a face-normal heading, see box_yaw) are what the robot believes (for
     now the true values); symmetry is the object's rotational symmetry about vertical
-    (pi/2 for a square cross-section). Success is judged from the true pose of
-    object_body: after the hold, the object has risen at least min_lift, is still
-    between the fingers, and the fingers have not closed on nothing.
+    (pi/2 for a square cross-section). The grasp point is grasp_height above object_pos:
+    zero, the centre, for short objects; see top_grasp_height for tall ones. Success is
+    judged from the true pose of object_body: after the hold, the object has risen at
+    least min_lift, is still between the fingers, and the fingers have not closed on
+    nothing.
     """
     arm = OSCArm(env)
     body_id = arm.model.body(object_body).id
@@ -218,17 +239,19 @@ def top_grasp(
     grasp_yaw = aligned_grasp_yaw(object_yaw, start_yaw, symmetry)
     grasp_rot = top_down_rotation(grasp_yaw)
 
-    above = object_pos + [0.0, 0.0, pregrasp_height]
+    # Adding a zero offset is exact, so grasp_height=0 reproduces the Lift results.
+    grasp_pos = object_pos + [0.0, 0.0, grasp_height]
+    above = grasp_pos + [0.0, 0.0, pregrasp_height]
     phases = [
         arm.hold("open", GRIPPER_OPEN, steps=10),
         arm.move_to("pregrasp", above, grasp_rot, pos_tol=0.01, max_steps=100),
-        arm.move_to("descend", object_pos, grasp_rot, max_speed=0.02, max_steps=80),
+        arm.move_to("descend", grasp_pos, grasp_rot, max_speed=0.02, max_steps=80),
     ]
     # Alignment actually achieved, against the object's true pose, as the grip closes.
     yaw_error = wrap_angle(heading(arm.eef_rot()) - box_yaw(true_object_rot()), symmetry)
     finger_axis = arm.eef_rot()[:, 0]
     face_axis = int(np.argmax(np.abs(true_object_rot().T @ finger_axis)))
-    lifted = object_pos + [0.0, 0.0, lift_height]
+    lifted = grasp_pos + [0.0, 0.0, lift_height]
     phases += [
         arm.hold("close", GRIPPER_CLOSED, steps=15),
         arm.move_to("lift", lifted, grasp_rot, gripper=GRIPPER_CLOSED, pos_tol=0.01),
@@ -239,9 +262,10 @@ def top_grasp(
     object_final = arm.data.xpos[body_id].copy()
     eef_final = arm.eef_pos()
     finger_gap = arm.finger_gap()
+    # "Still between the fingers": the true grasp point stays within 2 cm of the grip site.
     success = (
         object_final[2] - object_start[2] >= min_lift
-        and np.linalg.norm(object_final - eef_final) < 0.02
+        and np.linalg.norm(object_final + [0.0, 0.0, grasp_height] - eef_final) < 0.02
         and finger_gap > 0.005
     )
     return GraspResult(
@@ -262,4 +286,5 @@ def top_grasp(
         control_steps=arm.steps,
         sim_time=float(arm.data.time - start_sim),
         wall_time=time.perf_counter() - start_wall,
+        grasp_height=float(grasp_height),
     )

@@ -1,15 +1,17 @@
 # Stage 1 validation datasets
 
-Raw per-trial data behind the two Stage 1 figures in `figures/`. Both experiments use
-the stock robosuite **Lift** task (one cube, no clutter, no observation or execution
-noise) with a Franka Panda under OSC_POSE control, and the scripted top grasp in
-`src/robot_uncertainty/sim/primitives.py`. They validate that primitive; they are not
-the project's main experiments.
+Raw data behind the Stage 1 figures in `figures/`. Experiments A and B use the stock
+robosuite **Lift** task (one cube, no clutter, no observation or execution noise) with a
+Franka Panda under OSC_POSE control, and the scripted top grasp in
+`src/robot_uncertainty/sim/primitives.py`. Experiment C uses the same grasp on the
+project's own tabletop scene (`src/robot_uncertainty/sim/tabletop.py`, M1.1). They
+validate that primitive; they are not the project's main experiments.
 
 | File | Rows | Produced by | Figure |
 |---|---|---|---|
 | `yaw_switch.csv` | 165 | `scripts/diagnose_yaw_switch.py` | `figures/yaw_switch_45deg_selection_vs_lift.png` |
 | `grasp_alignment.csv` | 100 | `scripts/compare_grasp_alignment.py` | `figures/finger_gap_fixed_vs_aligned.png` |
+| `palm_clearance.csv` | 2560 | `scripts/audit_palm_clearance.py` | `figures/palm_clearance_centre_vs_raised_grasp.png` |
 
 ## How a grasp is judged
 
@@ -103,6 +105,50 @@ mm below the rigid-cube span); from 33 degrees the cube stays gripped across its
 **Limitations.** Reconstructed baseline (above); Lift's cube and no clutter or noise;
 the misalignment regimes are specific to this gripper, cube and friction.
 
+## Experiment C: palm clearance, centre vs raised grasp point (`palm_clearance.csv`)
+
+**Question.** The tabletop target is a 4 x 4 x 8 cm block. The Panda's palm collision
+mesh sits 31 mm behind the grip site, so gripping the block at its centre would put the
+palm 9 mm below the top face. Does the raised grasp point (`top_grasp_height`: +15 mm,
+for 6 mm of nominal palm clearance) keep the palm off the block in the real contact
+geometry, while the fingers still grip properly?
+
+**Design.** 16 configurations: the layouts of scene seeds 0-11, and the four extreme
+footprint centres of the workspace, (±7, -17 or +3) cm from the table centre, at 45 deg
+yaw. Each is grasped twice from the same settled state: `centre` (`grasp_height` 0, the
+original behaviour) and `raised`. 32 grasps, one row per control step (2560 rows).
+
+**Measurement** (`src/robot_uncertainty/sim/contacts.py`, the method of the regression
+test `test_raised_grasp_keeps_palm_clearance_and_grips_with_both_pads`). After every
+step, `clearance_mm` is the signed palm-block distance from MuJoCo's collider (palm
+collision mesh vs block box; negative is penetration), computed on a copy of the model
+with a 5 cm detection margin on the palm, or 50 cm when the palm is further away.
+`palm_contact` and the force columns (normal force, N) come from the live simulation's
+contact list. Where both report the palm, their depths agreed to within 0.15 mm in the
+two grasps checked.
+`mj_geomDistance` is not used: it returns spurious zeros for this pair.
+
+**Columns.** `config`, `scene_seed`, the block's start pose (`x_cm`, `y_cm` from the
+table centre, `yaw_deg`); `strategy`, `grasp_height_mm`, `success` (per grasp); `step`
+(from 1), `phase`; `clearance_mm`, `palm_contact`, `palm_force_n`, `pad1_force_n`,
+`pad2_force_n`. There is no wall-clock column, so a rerun must match exactly.
+
+**Results.** All 32 grasps lifted the block. Raised: no palm contact at any step;
+minimum clearance 6.1-8.9 mm, always during the close phase, 1.1-2.4 mm below the
+clearance at the end of the descent (whether the block rises or the hand sinks as the
+fingers close was not separated).
+The least clearance, 6.1 mm, is at the corner (-7, +3) cm. Centre: palm contact on
+37-40 steps in every configuration, as one unbroken stretch from late in the descent to
+the end of the hold; penetration up to 3.2-4.5 mm. During the descent the palm pushes
+the block into the table with up to 53 N (median 23 N), more than either pad's grip of
+about 20 N, and it still presses on the block's top while the block is lifted and held
+(median 9 N lifting, 8 N holding).
+
+**Limitations.** One block size, the default friction and mass, no noise; the 6 mm
+nominal clearance includes no allowance for vertical execution noise, which the M1
+noise model should be checked against. Contact forces are MuJoCo's soft-contact
+estimates, useful for comparison rather than as physical values.
+
 ## Reproducing
 
 Environment used: Python 3.12.3, MuJoCo 3.9.0, robosuite 1.5.2, numpy 1.26.4 (held
@@ -120,16 +166,19 @@ pip install -e . --no-deps
 pip install -e ".[sim,dev,analysis]"
 
 # Figures from the committed CSVs (no MuJoCo needed):
-python scripts/plot_grasp_figures.py
+python scripts/plot_grasp_figures.py   # experiments A and B
+python scripts/plot_palm_clearance.py  # experiment C
 
-# Rerun both experiments (about 5 minutes) into results/regenerated/ and compare
-# with these files; the committed data is never replaced:
+# Rerun the experiments (A and B about 5 minutes, C about 1 minute) into
+# results/regenerated/ and compare with these files; the committed data is never replaced:
 python scripts/plot_grasp_figures.py --regenerate
+python scripts/plot_palm_clearance.py --regenerate
 
 # Or run one experiment; output goes to results/ unless --out is given, and an
 # existing file is only replaced with --overwrite:
 python scripts/diagnose_yaw_switch.py --seeds 3 --out results/yaw_switch.csv
 python scripts/compare_grasp_alignment.py --seeds 50 --out results/grasp_alignment.csv
+python scripts/audit_palm_clearance.py --out results/palm_clearance.csv
 ```
 
 Every column except `wall_s` is reproduced exactly on this setup. MuJoCo is

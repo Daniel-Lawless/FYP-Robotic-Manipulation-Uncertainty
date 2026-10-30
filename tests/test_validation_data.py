@@ -23,6 +23,12 @@ ALIGNMENT_COLUMNS = [
     "wall_s",
 ]  # fmt: skip
 SCENE_COLUMNS = ["cube_width_x_mm", "cube_width_y_mm", "cube_yaw_deg"]
+PALM_COLUMNS = [
+    "config", "scene_seed", "x_cm", "y_cm", "yaw_deg", "strategy", "grasp_height_mm",
+    "success", "step", "phase", "clearance_mm", "palm_contact", "palm_force_n",
+    "pad1_force_n", "pad2_force_n",
+]  # fmt: skip
+PHASES = ["open", "pregrasp", "descend", "close", "lift", "hold"]
 
 
 def test_yaw_switch_dataset_covers_the_full_design() -> None:
@@ -46,6 +52,29 @@ def test_grasp_alignment_dataset_is_paired_by_seed() -> None:
     for seed in range(50):  # both controllers saw the same scene
         fixed, aligned = by_key[seed, "fixed"], by_key[seed, "aligned"]
         assert [fixed[k] for k in SCENE_COLUMNS] == [aligned[k] for k in SCENE_COLUMNS]
+
+
+def test_palm_clearance_dataset_covers_the_design() -> None:
+    rows = read_rows(DATA / "palm_clearance.csv")
+    assert list(rows[0]) == PALM_COLUMNS
+    grasps = {}
+    for r in rows:
+        grasps.setdefault((r["config"], r["strategy"]), []).append(r)
+    configs = [f"seed{s:02d}" for s in range(12)] + [
+        f"corner{x}{y}" for x in ("-7", "+7") for y in ("-17", "+3")
+    ]
+    assert set(grasps) == set(itertools.product(configs, ("centre", "raised")))
+    for (config, strategy), group in grasps.items():
+        assert [int(r["step"]) for r in group] == list(range(1, len(group) + 1))
+        phases = list(dict.fromkeys(r["phase"] for r in group))
+        assert phases == PHASES, (config, strategy)  # each phase one contiguous block
+        assert {r["grasp_height_mm"] for r in group} == {"0.0" if strategy == "centre" else "15.0"}
+        assert {r["success"] for r in group} == {"True"}
+        # Both grasps of a configuration start from the same block pose.
+        other = grasps[config, "raised" if strategy == "centre" else "centre"]
+        assert [group[0][k] for k in ("x_cm", "y_cm", "yaw_deg")] == [
+            other[0][k] for k in ("x_cm", "y_cm", "yaw_deg")
+        ]
 
 
 def test_write_rows_never_silently_overwrites(tmp_path: Path) -> None:
@@ -78,3 +107,16 @@ def test_figures_render_from_committed_data_without_mujoco(tmp_path: Path) -> No
         "finger_gap_fixed_vs_aligned.png",
         "yaw_switch_45deg_selection_vs_lift.png",
     ]
+
+
+def test_palm_clearance_figure_renders_from_committed_data_without_mujoco(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    script = ROOT / "scripts" / "plot_palm_clearance.py"
+    code = (
+        "import runpy, sys\n"
+        f"sys.argv = ['plot', '--figures-dir', {str(tmp_path)!r}]\n"
+        f"runpy.run_path({str(script)!r}, run_name='__main__')\n"
+        "assert 'mujoco' not in sys.modules and 'robosuite' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, cwd=tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == ["palm_clearance_centre_vs_raised_grasp.png"]
