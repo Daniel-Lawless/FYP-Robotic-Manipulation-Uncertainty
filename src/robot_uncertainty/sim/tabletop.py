@@ -281,5 +281,6 @@ def grasp_block_from_above(
     )
 
 
-def make_tabletop_env(config: TabletopConfig | None = None, seed: int = 0) -> TabletopEnv:
-    return TabletopEnv(config, seed=seed)
+def make_tabletop_env(config: TabletopConfig | None = None, seed: int = 0, **kwargs) -> TabletopEnv:
+    """A headless TabletopEnv; kwargs override robosuite settings, e.g. to add a viewer."""
+    return TabletopEnv(config, seed=seed, **kwargs)
