@@ -73,17 +73,29 @@ class ContactEvent:
     """A contact pair during one phase.
 
     unintended follows pick_place.is_unintended; kind is "environment" when the pair
-    includes the table, floor or robot mount and "object" otherwise. peak_force is the
-    largest total normal force of the pair's contacts on any one control step, N.
+    includes the table, floor or robot mount and "object" otherwise.
+
+    Two streams use this record (see pick_place.pick_and_place):
+    - endpoint events (PickPlaceResult.unintended_contacts and endpoint_contacts) come
+      from the contact list as it stands after each control step: steps counts the
+      control steps whose endpoint showed the pair, and peak_force is the largest total
+      normal force of the pair's contacts at one endpoint, N. first_substep and
+      substeps are None.
+    - historical events (OutcomeEvidence.contacts) come from every physics substep:
+      steps counts the control intervals in which the pair touched in at least one
+      substep, substeps the substeps in which it touched, and peak_force is the largest
+      per-substep total normal force, N.
     """
 
     pair: str  # e.g. "palm-target"
     phase: str
     first_step: int  # control step of the whole sequence, from 1
-    steps: int  # control steps on which the pair was in contact
+    steps: int  # control steps (endpoint) or control intervals (historical) with the pair
     peak_force: float = 0.0
     unintended: bool = True
     kind: str = "object"
+    first_substep: int | None = None  # physics substep of the whole sequence, from 1
+    substeps: int | None = None  # physics substeps in which the pair was in contact
 
 
 @dataclass(frozen=True)
@@ -170,6 +182,18 @@ def quat_to_matrix(quaternion) -> np.ndarray:
             [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
         ]
     )
+
+
+def quaternion_tilts(quaternions, axis: int, sign: float) -> np.ndarray:
+    """Angle between sign * body axis `axis` and world up, for each (w, x, y, z) row.
+
+    The same arithmetic as quat_to_matrix's bottom row, element by element, so each
+    value is bitwise equal to the scalar computation; vectorised for long trajectories.
+    """
+    q = np.asarray(quaternions, dtype=float).reshape(-1, 4)
+    w, x, y, z = (q / np.linalg.norm(q, axis=1)[:, None]).T
+    row = (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y))[axis]
+    return np.arccos(np.clip(sign * row, -1.0, 1.0))
 
 
 def _wrap(angle: float, period: float) -> float:
@@ -331,13 +355,14 @@ def object_outcome(
 
     start_rot, final_rot = quat_to_matrix(start.quaternion), quat_to_matrix(final.quaternion)
     axis, sign = up_axis(start_rot)
-    tilts = [
-        float(np.arccos(np.clip(sign * quat_to_matrix(q)[2, axis], -1.0, 1.0)))
-        for q in np.concatenate(quats)
-    ]
+    tilt_start, tilt_final = (
+        float(np.arccos(np.clip(sign * rot[2, axis], -1.0, 1.0))) for rot in (start_rot, final_rot)
+    )
+    tilt_max = max(tilt_start, tilt_final)
+    if len(quats) > 2:  # the recorded poses between the start and the final record
+        tilt_max = max(tilt_max, float(quaternion_tilts(quats[1], axis, sign).max()))
     face_final = resting_face(final, table, thresholds, tolerances)
     toppled = face_final is not None and face_final != face_start
-    tilt_final = tilts[-1]
     leaning = face_final is None and bool(set(final.contacts) - NOT_SUPPORTS)
     at_rest = is_at_rest(final, tolerances)
     size = np.asarray(start.size, dtype=float)
@@ -357,9 +382,9 @@ def object_outcome(
         at_rest=at_rest,
         resting_face_start=face_start,
         resting_face_final=face_final,
-        tilt_start=tilts[0],
+        tilt_start=tilt_start,
         tilt_final=tilt_final,
-        tilt_max=float(max(tilts)),
+        tilt_max=tilt_max,
         toppled=toppled,
         tilted=tilt_final > thresholds.significant_tilt and not toppled,
         leaning=leaning,
@@ -377,6 +402,10 @@ class OutcomeEvidence:
     grasp and placement are the primitive's own GraspResult and PlacementCheck; the
     label reads only the fields below them that it needs, so it can be tested without
     MuJoCo.
+
+    released, dropped and placement are endpoint measurements (the state after a control
+    step or after settling); contacts and the objects' maxima can come from every
+    physics substep (see ContactEvent and pick_place.pick_and_place).
     """
 
     target: str
@@ -390,7 +419,7 @@ class OutcomeEvidence:
     released: bool
     placement: PlacementCheck  # the target after settling
     objects: tuple[ObjectOutcome, ...]
-    contacts: tuple[ContactEvent, ...]
+    contacts: tuple[ContactEvent, ...]  # every pair, per phase, in order of first contact
     table: TableSurface
 
     def object(self, name: str) -> ObjectOutcome:

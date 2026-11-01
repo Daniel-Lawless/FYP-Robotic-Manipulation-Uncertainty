@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import mujoco
 import numpy as np
@@ -83,6 +83,13 @@ class PickPlaceResult:
     should not happen are listed separately in unintended_contacts. objects, evidence
     and label add the whole scene (M1.3a): label.y also requires that no other block was
     displaced, toppled or knocked off; see outcome.outcome.
+
+    The legacy fields (success to control_steps) come from endpoint measurements, after
+    each control step, exactly as in M1.2: unintended_contacts is built from the
+    endpoint contact stream, not from evidence.contacts. objects, evidence and label use
+    every physics substep too (M1.3a.1): historical contact events and maxima over the
+    substep poses. endpoint_contacts, endpoint_objects and endpoint_label keep the
+    control-step assessment of M1.3a for comparison.
     """
 
     success: bool
@@ -101,6 +108,9 @@ class PickPlaceResult:
     objects: tuple[ObjectOutcome, ...] = ()  # every block in the scene, in config order
     evidence: OutcomeEvidence | None = None
     label: OutcomeLabel | None = None
+    endpoint_contacts: tuple[ContactEvent, ...] = ()  # every endpoint event, all pairs
+    endpoint_objects: tuple[ObjectOutcome, ...] = ()  # maxima over control steps only
+    endpoint_label: OutcomeLabel | None = None  # from endpoint_contacts and _objects
 
     @property
     def grasp_success(self) -> bool:
@@ -163,12 +173,41 @@ def is_unintended(
     return bool(ROBOT & set(pair)) or target in pair
 
 
-class StepMonitor:
-    """Records contacts and the target's pose after every env.step inside a with block.
+# Integrators whose step leaves the contact list, xpos/xquat and the constraint forces
+# describing the configuration before integration, and qpos/qvel the one after (checked
+# by tests/sim/test_substep_evidence.py). RK4 recomputes them at intermediate stages.
+SUBSTEP_INTEGRATORS = frozenset(
+    {
+        mujoco.mjtIntegrator.mjINT_EULER,
+        mujoco.mjtIntegrator.mjINT_IMPLICIT,
+        mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    }
+)
+_UNSET = object()
 
-    Also records every block's position and orientation (poses[name], one (position,
-    wxyz quaternion) per step) and each contact pair's total normal force (forces, one
-    {pair: N} per step). Recording reads the state only, so it never changes the motion.
+
+class StepMonitor:
+    """Records contacts and poses inside a with block, in two separate streams.
+
+    Endpoint stream, after every env.step (one control step): the contact pairs and the
+    target's and grip site's positions (pairs, block_positions, eef_positions), the
+    deepest penetration, every block's position and orientation (poses[name], one
+    (position, wxyz quaternion) per step, from xpos/xquat) and each contact pair's total
+    normal force (forces, one {pair: N} per step). After env.step, the contact list,
+    xpos and xquat describe the configuration at the start of its last physics substep.
+
+    Substep stream, after every physics substep (each sim.step2, or sim.step on the
+    non-lite path): each role pair's total normal force over its contact points
+    (substep_pairs, {pair key: N}; see role_names), read from the contact list, which
+    describes the configuration before that substep's integration, and every block's
+    pose after the integration, read from its free-joint qpos (substep_poses, one array
+    of (x, y, z, w, qx, qy, qz) rows in block_names order). substep_bounds[i] is the
+    number of substeps recorded by the end of control step i + 1.
+
+    Recording reads existing arrays (and mj_contactForce) only, so it never changes the
+    motion. The wrappers are instance attributes of env and env.sim, removed or
+    restored on exit, so monitors nest and compose with other wrappers such as the
+    viewer's paced step.
     """
 
     def __init__(self, env: TabletopEnv, target: str) -> None:
@@ -190,6 +229,37 @@ class StepMonitor:
         self.poses: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {n: [] for n in env.blocks}
         self._force = np.zeros(6)
 
+        if model.opt.integrator not in SUBSTEP_INTEGRATORS:
+            integrator = mujoco.mjtIntegrator(model.opt.integrator).name
+            raise ValueError(f"substep recording is not verified for {integrator}")
+        # Role ids in sorted name order, so a pair key lo * n + hi sorts like the pair.
+        self.role_names = tuple(sorted(set(self.roles)))
+        index = {name: i for i, name in enumerate(self.role_names)}
+        ids = np.array([index[r] for r in self.roles], dtype=np.int64)
+        # The pair key of every geom pair, so a substep needs one lookup per contact.
+        self._pair_keys = np.minimum.outer(ids, ids) * len(self.role_names) + np.maximum.outer(
+            ids, ids
+        )
+        self.block_names = tuple(env.blocks)
+        addresses = []
+        for name in self.block_names:
+            body = env.block_body_ids[name]
+            joint = model.body_jntadr[body]
+            free = model.jnt_type[joint] == mujoco.mjtJoint.mjJNT_FREE
+            if model.body_parentid[body] != 0 or model.body_jntnum[body] != 1 or not free:
+                raise ValueError(f"{name}: substep poses need a world child with one free joint")
+            addresses.append(model.jnt_qposadr[joint])
+        self._pose_index = (np.array(addresses)[:, None] + np.arange(7)).ravel()
+        self._model, self._data = model, env.sim.data._data
+        self.substep_pairs: list[dict[int, float]] = []
+        self.substep_poses: list[np.ndarray] = []
+        self.substep_bounds: list[int] = []
+
+    def pair_of(self, key: int) -> tuple[str, str]:
+        """The sorted role pair of a substep_pairs key."""
+        lo, hi = divmod(key, len(self.role_names))
+        return self.role_names[lo], self.role_names[hi]
+
     def __enter__(self) -> StepMonitor:
         self._outer = self.env.__dict__.get("step")  # e.g. the viewer's paced step
         step = self.env.step
@@ -200,6 +270,18 @@ class StepMonitor:
             return out
 
         self.env.step = recording_step
+        self._sim = self.env.sim
+        self._sim_saved = {}
+        for name in ("step", "step2"):
+            self._sim_saved[name] = self._sim.__dict__.get(name, _UNSET)
+            original = getattr(self._sim, name)
+
+            def recording_substep(*args, _original=original, **kwargs):
+                out = _original(*args, **kwargs)
+                self._record_substep()
+                return out
+
+            setattr(self._sim, name, recording_substep)
         return self
 
     def __exit__(self, *exc) -> None:
@@ -207,6 +289,24 @@ class StepMonitor:
             del self.env.step
         else:
             self.env.step = self._outer
+        for name, saved in self._sim_saved.items():
+            if saved is _UNSET:
+                del self._sim.__dict__[name]
+            else:
+                setattr(self._sim, name, saved)
+
+    def _record_substep(self) -> None:
+        data = self._data
+        self.substep_poses.append(data.qpos[self._pose_index])
+        totals: dict[int, float] = {}
+        if data.ncon:
+            geom = data.contact.geom
+            keys = self._pair_keys[geom[:, 0], geom[:, 1]].tolist()
+            model, force = self._model, self._force
+            for i, key in enumerate(keys):
+                mujoco.mj_contactForce(model, data, i, force)
+                totals[key] = totals.get(key, 0.0) + abs(float(force[0]))
+        self.substep_pairs.append(totals)
 
     def _record(self) -> None:
         model, data = self.env.sim.model._model, self.env.sim.data._data
@@ -225,10 +325,69 @@ class StepMonitor:
         for name, poses in self.poses.items():
             body = self.env.block_body_ids[name]
             poses.append((data.xpos[body].copy(), data.xquat[body].copy()))
+        self.substep_bounds.append(len(self.substep_pairs))
 
     def touching(self, name: str, roles: frozenset[str]) -> bool:
-        """Whether, after the last step, the named block touched anything in roles."""
+        """Whether, at the endpoint of the last control step, the named block touched
+        anything in roles: an endpoint query over pairs[-1] only, not over the substeps
+        of that interval."""
         return any(name in pair and roles & set(pair) for pair in self.pairs[-1])
+
+    def substep_controls(self) -> list[int]:
+        """The control step (from 1) of each recorded substep: that of the first env.step
+        to end after it (the env.step it ran in, unless the physics was stepped directly).
+        """
+        if len(self.substep_pairs) != (self.substep_bounds[-1] if self.substep_bounds else 0):
+            raise ValueError("substeps were recorded outside env.step")
+        controls, start = [], 0
+        for step, end in enumerate(self.substep_bounds, start=1):
+            controls += [step] * (end - start)
+            start = end
+        return controls
+
+
+def historical_events(
+    monitor: StepMonitor, phase_of: list[str], target: str, others: frozenset[str]
+) -> tuple[ContactEvent, ...]:
+    """Every contact pair per phase from a monitor's substep stream (see ContactEvent).
+
+    Each substep takes the phase of the control step it ran in. Events are in order of
+    first substep, pairs sorted within a substep; classification as for the endpoint
+    events (is_unintended, ENVIRONMENT).
+    """
+    # (key, phase) -> [first_step, steps, last_step, first_substep, substeps, peak_force]
+    events: dict[tuple[int, str], list] = {}
+    for substep, (step, totals) in enumerate(
+        zip(monitor.substep_controls(), monitor.substep_pairs, strict=True), start=1
+    ):
+        phase = phase_of[step - 1]
+        for key in sorted(totals):
+            event = events.get((key, phase))
+            if event is None:
+                events[(key, phase)] = [step, 1, step, substep, 1, totals[key]]
+                continue
+            if event[2] != step:
+                event[1] += 1
+                event[2] = step
+            event[4] += 1
+            event[5] = max(event[5], totals[key])
+    out = []
+    for (key, phase), (first, steps, _, first_sub, subs, peak) in events.items():
+        pair = monitor.pair_of(key)
+        out.append(
+            ContactEvent(
+                "-".join(pair),
+                phase,
+                first,
+                steps,
+                peak_force=peak,
+                unintended=is_unintended(pair, phase, target, others),
+                kind="environment" if ENVIRONMENT & set(pair) else "object",
+                first_substep=first_sub,
+                substeps=subs,
+            )
+        )
+    return tuple(out)
 
 
 def block_contacts(env: TabletopEnv, name: str) -> tuple[str, ...]:
@@ -452,7 +611,9 @@ def pick_and_place(
     slips = [np.linalg.norm(offsets[i] - offsets[carried[0] - 1]) for i in carried]
     max_slip = float(max(slips, default=0.0))
 
-    # Every contact pair, per phase, in order of first appearance (sorted within a step).
+    # Endpoint events: every contact pair at the control-step endpoints, per phase, in
+    # order of first appearance (sorted within a step). The legacy unintended_contacts
+    # are these, filtered; the historical events (evidence.contacts) are built apart.
     others = frozenset(env.blocks) - {name}
     events: dict[tuple[tuple[str, str], str], tuple[list[int], list[float]]] = {}
     for i, (phase, pairs, forces) in enumerate(
@@ -462,7 +623,7 @@ def pick_and_place(
             steps, peaks = events.setdefault((pair, phase), ([], []))
             steps.append(i + 1)
             peaks.append(forces[pair])
-    contacts = tuple(
+    endpoint_contacts = tuple(
         ContactEvent(
             "-".join(pair),
             phase,
@@ -474,7 +635,8 @@ def pick_and_place(
         )
         for (pair, phase), (steps, peaks) in events.items()
     )
-    unintended = tuple(e for e in contacts if e.unintended)
+    unintended = tuple(e for e in endpoint_contacts if e.unintended)
+    contacts = historical_events(monitor, phase_of, name, others)
 
     table_z = env.config.table_height
     checks = [
@@ -491,19 +653,25 @@ def pick_and_place(
     ]
     failure = next((reason for ok, reason in checks if not ok), "")
 
-    objects = tuple(
-        object_outcome(
-            start[n],
-            object_record(env, n),
-            np.array([p for p, _ in monitor.poses[n]]),
-            np.array([q for _, q in monitor.poses[n]]),
-            table,
-            thresholds,
-            tolerances,
+    # Maxima: endpoint_objects over the start, the control-step poses and the final
+    # record, as in M1.3a; objects also over the pose after every physics substep.
+    final = {n: object_record(env, n) for n in env.blocks}
+    substeps = np.array(monitor.substep_poses).reshape(len(monitor.substep_poses), -1, 7)
+
+    def assess(n: str, dense: bool) -> ObjectOutcome:
+        positions = np.array([p for p, _ in monitor.poses[n]]).reshape(-1, 3)
+        quaternions = np.array([q for _, q in monitor.poses[n]]).reshape(-1, 4)
+        if dense:
+            poses = substeps[:, monitor.block_names.index(n)]
+            positions = np.concatenate([positions, poses[:, :3]])
+            quaternions = np.concatenate([quaternions, poses[:, 3:]])
+        return object_outcome(
+            start[n], final[n], positions, quaternions, table, thresholds, tolerances
         )
-        for n in env.blocks
-    )
-    evidence = OutcomeEvidence(
+
+    endpoint_objects = tuple(assess(n, dense=False) for n in env.blocks)
+    objects = tuple(assess(n, dense=True) for n in env.blocks)
+    endpoint_evidence = OutcomeEvidence(
         target=name,
         grasp=grasp,
         grasp_success=grasp.success,
@@ -514,10 +682,11 @@ def pick_and_place(
         drop_phase=phase_of[lost[0]] if lost else "",
         released=released,
         placement=placement,
-        objects=objects,
-        contacts=contacts,
+        objects=endpoint_objects,
+        contacts=endpoint_contacts,
         table=table,
     )
+    evidence = replace(endpoint_evidence, objects=objects, contacts=contacts)
     return PickPlaceResult(
         success=not failure,
         failure_reason=failure,
@@ -535,4 +704,7 @@ def pick_and_place(
         objects=objects,
         evidence=evidence,
         label=outcome(evidence, thresholds),
+        endpoint_contacts=endpoint_contacts,
+        endpoint_objects=endpoint_objects,
+        endpoint_label=outcome(endpoint_evidence, thresholds),
     )

@@ -18,9 +18,46 @@ def env():
 
 
 def run(env, seed: int = 0, **kwargs):
+    """pick_and_place inside an outer StepMonitor, an independent endpoint recording."""
     env.reset(scene_seed=seed)
     settle(env)
-    return pick_place.pick_and_place(env, TARGET, **kwargs)
+    with pick_place.StepMonitor(env, TARGET) as outer:
+        result = pick_place.pick_and_place(env, TARGET, **kwargs)
+    check_endpoint_events(result, outer)
+    return result
+
+
+def check_endpoint_events(result, outer) -> None:
+    """The legacy events are exactly what the control-step endpoints showed."""
+    phase_of = [p.name for p in result.phases for _ in range(p.steps)]
+    assert len(phase_of) == len(outer.pairs) == result.control_steps
+    seen: dict[tuple[str, str], list[int]] = {}
+    for i, (phase, pairs) in enumerate(zip(phase_of, outer.pairs, strict=True)):
+        for pair in sorted(pairs):
+            seen.setdefault(("-".join(pair), phase), []).append(i)
+    events = {(c.pair, c.phase): c for c in result.endpoint_contacts}
+    assert list(events) == list(seen)  # same pairs and phases, in the same order
+    for key, steps in seen.items():
+        c, pair = events[key], tuple(key[0].split("-"))
+        assert c.first_step == steps[0] + 1 and c.steps == len(steps)
+        assert c.peak_force == max(outer.forces[i][pair] for i in steps)
+        assert c.first_substep is None and c.substeps is None
+    assert result.unintended_contacts == tuple(c for c in result.endpoint_contacts if c.unintended)
+
+
+def check_history_covers_endpoints(result) -> None:
+    """Every endpoint event is also a historical one, classified alike: an endpoint is
+    the last substep of its control step, so counts and peaks can only grow."""
+    history = {(c.pair, c.phase): c for c in result.evidence.contacts}
+    for c in result.endpoint_contacts:
+        h = history[(c.pair, c.phase)]
+        assert (h.unintended, h.kind) == (c.unintended, c.kind)
+        assert h.first_step <= c.first_step and h.steps >= c.steps
+        assert h.peak_force >= c.peak_force
+    for h in result.evidence.contacts:
+        assert 1 <= h.steps <= h.substeps and h.first_substep >= 1
+        # A contact-list entry need not carry force (a separating contact): >= 0 only.
+        assert np.isfinite(h.peak_force) and h.peak_force >= 0
 
 
 def check_evidence(result) -> None:
@@ -30,9 +67,9 @@ def check_evidence(result) -> None:
     assert e.phases == tuple((p.name, p.reached) for p in result.phases)
     assert e.placement is result.placement
     assert e.released == result.released and e.dropped == result.dropped
-    assert tuple(c for c in e.contacts if c.unintended) == result.unintended_contacts
+    check_history_covers_endpoints(result)
     assert e.objects == result.objects
-    assert all(c.peak_force > 0 for c in e.contacts)
+    assert all(c.peak_force > 0 for c in result.endpoint_contacts)
 
 
 def test_success(env) -> None:
@@ -47,7 +84,11 @@ def test_success(env) -> None:
 def test_off_target_placement_is_a_placement_failure(env) -> None:
     env.reset(scene_seed=0)
     settle(env)
-    result = pick_place.pick_and_place(env, TARGET, place_at=env.goal_position[:2] + [0.04, 0.0])
+    with pick_place.StepMonitor(env, TARGET) as outer:
+        result = pick_place.pick_and_place(
+            env, TARGET, place_at=env.goal_position[:2] + [0.04, 0.0]
+        )
+    check_endpoint_events(result, outer)
     check_evidence(result)
     assert result.failure_reason.startswith("outside the goal by")
     assert result.label.failure_stage == "placement" and result.label.y == 0

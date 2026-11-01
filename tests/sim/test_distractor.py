@@ -11,6 +11,7 @@ from robot_uncertainty.sim.outcome import (  # noqa: E402
     OutcomeThresholds,
     object_outcome,
     quat_to_matrix,
+    up_axis,
 )
 from robot_uncertainty.sim.pick_place import (  # noqa: E402
     StepMonitor,
@@ -175,24 +176,67 @@ def test_touching_layout_still_runs(env) -> None:
 # --- per-object tracking (Test 7) ----------------------------------------------------
 
 
+COMPARISON_TOL = 1e-12  # for maxima recomputed here with a different summation
+
+
+def tilt_of(quaternion, axis: int, sign: float) -> float:
+    return float(np.arccos(np.clip(sign * quat_to_matrix(quaternion)[2, axis], -1.0, 1.0)))
+
+
 def test_every_block_is_tracked_on_every_step(env) -> None:
     layout = {TARGET: Placement(0.0, -0.12, 0.4), DISTRACTOR: Placement(0.2, -0.2, 0.1)}
     valid_scene(env, layout)
-    with StepMonitor(env, TARGET) as outer:
-        result = pick_and_place(env, TARGET)
+    # An independent substep trace: each block's free-joint qpos after every step2.
+    trace = {TARGET: [], DISTRACTOR: []}
+    step2 = env.sim.step2
+
+    def traced_step2():
+        step2()
+        for n, rows in trace.items():
+            rows.append(env.sim.data.get_joint_qpos(env.blocks[n].joints[0]).copy())
+
+    env.sim.step2 = traced_step2
+    try:
+        with StepMonitor(env, TARGET) as outer:
+            result = pick_and_place(env, TARGET)
+    finally:
+        del env.sim.step2
     assert result.success and result.label.y == 1
     state = env.true_state()
     outcomes = {o.name: o for o in result.objects}
-    assert list(outcomes) == [TARGET, DISTRACTOR]
-    for name in (TARGET, DISTRACTOR):
+    endpoint = {o.name: o for o in result.endpoint_objects}
+    assert list(outcomes) == list(endpoint) == [TARGET, DISTRACTOR]
+    substeps = int(round(env.control_timestep / env.model_timestep))
+    for k, name in enumerate((TARGET, DISTRACTOR)):
         poses = outer.poses[name]
         assert len(poses) == result.control_steps
         assert np.array_equal(poses[-1][0], state.object(name).position)
         assert np.array_equal(outcomes[name].final_position, state.object(name).position)
         start = np.array([layout[name].x, layout[name].y])
         assert np.allclose(outcomes[name].start_position[:2], start, atol=1e-4)
-        planar = [np.linalg.norm(p[:2] - outcomes[name].start_position[:2]) for p, _ in poses]
-        assert np.isclose(outcomes[name].max_displacement, max(planar))
+        origin = outcomes[name].start_position[:2]
+        planar = [np.linalg.norm(p[:2] - origin) for p, _ in poses]
+        assert np.isclose(endpoint[name].max_displacement, max(planar))  # as in M1.3a
+        # The monitor's substep stream is the independent trace, bit for bit.
+        dense = np.array(trace[name])
+        assert len(dense) == substeps * result.control_steps
+        assert np.array_equal(np.array(outer.substep_poses)[:, 7 * k : 7 * k + 7], dense)
+        # Maxima over start, control steps, substeps and final record.
+        final = np.linalg.norm(outcomes[name].final_position[:2] - origin)
+        dense_planar = np.linalg.norm(dense[:, :2] - origin, axis=1)
+        expected = max(max(planar), float(dense_planar.max()), final)
+        o = outcomes[name]
+        assert o.max_displacement >= endpoint[name].max_displacement - COMPARISON_TOL
+        assert abs(o.max_displacement - expected) <= COMPARISON_TOL
+        axis, sign = up_axis(quat_to_matrix(o.start_quaternion))
+        tilts = [tilt_of(q, axis, sign) for _, q in poses] + [
+            tilt_of(q[3:], axis, sign) for q in dense
+        ]
+        expected = max(o.tilt_start, o.tilt_final, *tilts)
+        assert o.tilt_max >= endpoint[name].tilt_max - COMPARISON_TOL
+        assert abs(o.tilt_max - expected) <= COMPARISON_TOL
+        assert o.tilt_final == endpoint[name].tilt_final  # final-state values unchanged
+        assert o.final_displacement == endpoint[name].final_displacement
     assert outcomes[TARGET].max_displacement > 0.25  # carried to the goal
     assert outcomes[DISTRACTOR].max_displacement < 1e-4
 
@@ -239,8 +283,13 @@ def test_grasp_axis_contrast_is_recorded(env) -> None:
             result, action = trials.attempt(env, scene, trials.candidate(index))
             assert result.grasp.commanded_face_axis == result.grasp.face_axis
             check_consistent(result)
-            for c in result.evidence.contacts:
+            for c in result.endpoint_contacts:
                 assert c.peak_force > 0 and c.steps > 0
+            # Historical events include contact-list entries carrying no force (blocks
+            # separating within a substep), so only finite and non-negative here.
+            for c in result.evidence.contacts:
+                assert np.isfinite(c.peak_force) and c.peak_force >= 0
+                assert 0 < c.steps <= c.substeps
 
 
 def test_carry_path_collision_is_detected(env) -> None:
