@@ -6,6 +6,23 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
+from robot_uncertainty.sim.actions import GraspAction
+from robot_uncertainty.sim.outcome import (  # noqa: F401 (re-exported)
+    GRASP_PHASES,
+    ROBOT,
+    ContactEvent,
+    ObjectOutcome,
+    ObjectRecord,
+    OutcomeEvidence,
+    OutcomeLabel,
+    OutcomeThresholds,
+    PlacementCheck,
+    PlacementTolerances,
+    TableSurface,
+    initial_resting_face,
+    object_outcome,
+    outcome,
+)
 from robot_uncertainty.sim.primitives import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
@@ -25,8 +42,8 @@ FINGERTIP_DEPTH = 0.0092
 # criterion as top_grasp's success check).
 HELD_RADIUS = 0.02
 
-ROBOT = frozenset({"fingers", "palm", "arm"})
-GRASP_PHASES = ("open", "pregrasp", "descend", "close", "lift", "hold")
+# Roles that are fixed parts of the scene (ContactEvent.kind "environment").
+ENVIRONMENT = frozenset({"table", "floor", "mount"})
 # Phases in which the fingers are meant to touch the target, and in which the target
 # is meant to be off the table.
 GRIPPING = frozenset({"close", "lift", "hold", "carry", "lower", "release"})
@@ -58,59 +75,14 @@ class PlaceParams:
     settle_steps: int = 5  # 0.25 s, the proposal's settle time
 
 
-@dataclass(frozen=True)
-class PlacementTolerances:
-    """When a placed block counts as upright, supported by the table and at rest."""
-
-    max_tilt: float = np.radians(2.0)  # vertical axis from world z
-    max_support_gap: float = 0.001  # |lowest corner - table top|, metres
-    max_linear_speed: float = 0.005  # m/s
-    max_angular_speed: float = 0.05  # rad/s
-
-
-@dataclass(frozen=True)
-class PlacementCheck:
-    """A block's state against the goal region, from the true simulator state."""
-
-    position: np.ndarray  # world, metres
-    quaternion: np.ndarray  # world orientation, (w, x, y, z)
-    centre_error: float  # horizontal distance of the block centre from the goal centre
-    goal_margin: float  # how far the outermost box corner is inside the goal circle
-    tilt: float  # angle of the block's vertical axis from world z, radians
-    support_gap: float  # lowest box corner above the table top (negative: sunk in)
-    linear_speed: float  # m/s
-    angular_speed: float  # rad/s
-    contacts: tuple[str, ...]  # roles of everything touching the block (see geom_role)
-    in_goal: bool  # every corner of the box lies over the goal circle
-    upright: bool
-    on_table: bool  # touching the table, resting on its lowest face
-    at_rest: bool
-
-    @property
-    def touching_robot(self) -> bool:
-        return bool(ROBOT & set(self.contacts))
-
-    @property
-    def stable(self) -> bool:
-        return self.upright and self.on_table and self.at_rest
-
-
-@dataclass(frozen=True)
-class ContactEvent:
-    """An unintended contact pair during one phase (see is_unintended)."""
-
-    pair: str  # e.g. "palm-target"
-    phase: str
-    first_step: int  # control step of the whole sequence, from 1
-    steps: int  # control steps on which the pair was in contact
-
-
 @dataclass
 class PickPlaceResult:
     """Outcome of one pick-and-place attempt.
 
     success is the task outcome from the true state after settling; contacts that
-    should not happen are listed separately in unintended_contacts.
+    should not happen are listed separately in unintended_contacts. objects, evidence
+    and label add the whole scene (M1.3a): label.y also requires that no other block was
+    displaced, toppled or knocked off; see outcome.outcome.
     """
 
     success: bool
@@ -126,6 +98,9 @@ class PickPlaceResult:
     control_steps: int
     sim_time: float  # simulated seconds
     wall_time: float  # seconds
+    objects: tuple[ObjectOutcome, ...] = ()  # every block in the scene, in config order
+    evidence: OutcomeEvidence | None = None
+    label: OutcomeLabel | None = None
 
     @property
     def grasp_success(self) -> bool:
@@ -162,7 +137,9 @@ def geom_role(model: mujoco.MjModel, geom: int, blocks: dict[int, str]) -> str:
     return name or f"geom{geom}"
 
 
-def is_unintended(pair: tuple[str, str], phase: str, target: str) -> bool:
+def is_unintended(
+    pair: tuple[str, str], phase: str, target: str, others: frozenset[str] = frozenset()
+) -> bool:
     """Whether a contact pair (sorted roles) should not occur during a phase.
 
     Expected: the target on the table except while lifted and carried; the fingers on
@@ -170,6 +147,10 @@ def is_unintended(pair: tuple[str, str], phase: str, target: str) -> bool:
     else involving the robot or the target is unintended: the palm or arm touching
     anything, the robot touching the table or its mount, the fingers brushing the
     target while approaching or after letting go, the target falling to the floor.
+
+    others names the scene's other blocks: they are expected on the table, and any other
+    contact of theirs (with the robot, the target, each other or the floor) is
+    unintended. With none, the classification is the single-block one above.
     """
     if pair == tuple(sorted(("table", target))):
         return phase in AIRBORNE
@@ -177,11 +158,18 @@ def is_unintended(pair: tuple[str, str], phase: str, target: str) -> bool:
         return phase not in GRIPPING
     if pair == ("fingers", "fingers"):
         return False
+    if others & set(pair):
+        return "table" not in pair
     return bool(ROBOT & set(pair)) or target in pair
 
 
 class StepMonitor:
-    """Records contacts and the target's pose after every env.step inside a with block."""
+    """Records contacts and the target's pose after every env.step inside a with block.
+
+    Also records every block's position and orientation (poses[name], one (position,
+    wxyz quaternion) per step) and each contact pair's total normal force (forces, one
+    {pair: N} per step). Recording reads the state only, so it never changes the motion.
+    """
 
     def __init__(self, env: TabletopEnv, target: str) -> None:
         self.env = env
@@ -198,6 +186,9 @@ class StepMonitor:
         self.block_positions: list[np.ndarray] = []
         self.eef_positions: list[np.ndarray] = []
         self.penetration = 0.0
+        self.forces: list[dict[tuple[str, str], float]] = []
+        self.poses: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {n: [] for n in env.blocks}
+        self._force = np.zeros(6)
 
     def __enter__(self) -> StepMonitor:
         self._outer = self.env.__dict__.get("step")  # e.g. the viewer's paced step
@@ -218,18 +209,61 @@ class StepMonitor:
             self.env.step = self._outer
 
     def _record(self) -> None:
-        data = self.env.sim.data._data
+        model, data = self.env.sim.model._model, self.env.sim.data._data
         pairs = set()
-        for contact in data.contact[: data.ncon]:
-            pairs.add(tuple(sorted((self.roles[contact.geom1], self.roles[contact.geom2]))))
+        forces: dict[tuple[str, str], float] = {}
+        for i, contact in enumerate(data.contact[: data.ncon]):
+            pair = tuple(sorted((self.roles[contact.geom1], self.roles[contact.geom2])))
+            pairs.add(pair)
             self.penetration = max(self.penetration, -contact.dist)
+            mujoco.mj_contactForce(model, data, i, self._force)
+            forces[pair] = forces.get(pair, 0.0) + abs(float(self._force[0]))
         self.pairs.append(frozenset(pairs))
+        self.forces.append(forces)
         self.block_positions.append(data.xpos[self.body].copy())
         self.eef_positions.append(data.site_xpos[self.site].copy())
+        for name, poses in self.poses.items():
+            body = self.env.block_body_ids[name]
+            poses.append((data.xpos[body].copy(), data.xquat[body].copy()))
 
     def touching(self, name: str, roles: frozenset[str]) -> bool:
         """Whether, after the last step, the named block touched anything in roles."""
         return any(name in pair and roles & set(pair) for pair in self.pairs[-1])
+
+
+def block_contacts(env: TabletopEnv, name: str) -> tuple[str, ...]:
+    """Roles (see geom_role) of everything touching a block now, sorted."""
+    model, data = env.sim.model._model, env.sim.data._data
+    blocks = {model.geom(g).id: n for n, obj in env.blocks.items() for g in obj.contact_geoms}
+    own = {model.geom(g).id for g in env.blocks[name].contact_geoms}
+    roles = set()
+    for contact in data.contact[: data.ncon]:
+        if contact.geom1 in own and contact.geom2 not in own:
+            roles.add(geom_role(model, contact.geom2, blocks))
+        elif contact.geom2 in own and contact.geom1 not in own:
+            roles.add(geom_role(model, contact.geom1, blocks))
+    return tuple(sorted(roles))
+
+
+def object_record(env: TabletopEnv, name: str) -> ObjectRecord:
+    """A block's true state now, for outcome.object_outcome."""
+    spec = block_spec(env, name)
+    state = env.true_state().object(name)
+    return ObjectRecord(
+        name=name,
+        role=spec.role,
+        size=np.asarray(spec.size, dtype=float),
+        position=state.position,
+        quaternion=state.quaternion,
+        linear_speed=float(np.linalg.norm(state.linear_velocity)),
+        angular_speed=float(np.linalg.norm(state.angular_velocity)),
+        contacts=block_contacts(env, name),
+    )
+
+
+def table_surface(env: TabletopEnv) -> TableSurface:
+    size = env.config.table_size
+    return TableSurface(env.config.table_height, size[0] / 2, size[1] / 2)
 
 
 def assess_placement(
@@ -291,6 +325,8 @@ def pick_and_place(
     place_at: np.ndarray | None = None,
     params: PlaceParams | None = None,
     tolerances: PlacementTolerances | None = None,
+    action: GraspAction | None = None,
+    thresholds: OutcomeThresholds | None = None,
 ) -> PickPlaceResult:
     """Grasp a block from above, carry it to the goal, set it down, let go and retract.
 
@@ -301,19 +337,41 @@ def pick_and_place(
     timeout, or a gripper closed on nothing after the grasp, skips the remaining
     movements; the robot then holds still for the settle phase. The outcome is judged
     from the true state after settling; see PickPlaceResult.
+
+    action, if given, fixes the face pair to grip (its closing heading, chosen at
+    decision time; see actions.execution_heading); otherwise the grasp takes the face
+    pair needing the least wrist rotation, as before. Every block is recorded from the
+    start of the call to the end of the settle phase for the scene outcome
+    (PickPlaceResult.objects and label).
+
+    Raises ValueError, before anything moves, if the start is invalid: any problem from
+    env.check_initial_state(), or a block with no resting face (see
+    outcome.initial_resting_face). The check only reads the state; settle first.
     """
+    if action is not None and action.object != name:
+        raise ValueError(f"action is for {action.object!r}, not {name!r}")
     params = params or PlaceParams()
     start_wall, start_sim = time.perf_counter(), env.sim.data.time
+    problems = env.check_initial_state()
+    if problems:
+        raise ValueError(f"invalid initial state: {'; '.join(problems)}")
+    table = table_surface(env)
+    start = {n: object_record(env, n) for n in env.blocks}
+    for record in start.values():
+        initial_resting_face(record, table, thresholds, tolerances)
+    # Without an action, the M1.2 call exactly (closing_heading is not even passed).
+    explicit = {} if action is None else {"closing_heading": action.closing_heading}
     with StepMonitor(env, name) as monitor:
-        grasp = grasp_block_from_above(env, name, lift_height=params.carry_clearance)
+        grasp = grasp_block_from_above(env, name, lift_height=params.carry_clearance, **explicit)
         phases = list(grasp.phases)
         arm = OSCArm(env)
         obs = env.observe()
         held = obs.object(name)
+        gripper_empty = bool(obs.gripper_width < held.size[:2].min() / 2)
         abort = ""
         if not all(p.reached for p in phases):
             abort = "timeout in " + next(p.name for p in phases if not p.reached)
-        elif obs.gripper_width < held.size[:2].min() / 2:
+        elif gripper_empty:
             abort = "grasp failed: the gripper closed on nothing"
 
         released = False
@@ -394,14 +452,29 @@ def pick_and_place(
     slips = [np.linalg.norm(offsets[i] - offsets[carried[0] - 1]) for i in carried]
     max_slip = float(max(slips, default=0.0))
 
-    events: dict[tuple[str, str], list[int]] = {}
-    for i, (phase, pairs) in enumerate(zip(phase_of, monitor.pairs, strict=True)):
-        for pair in pairs:
-            if is_unintended(pair, phase, name):
-                events.setdefault(("-".join(pair), phase), []).append(i + 1)
-    unintended = tuple(
-        ContactEvent(pair, phase, steps[0], len(steps)) for (pair, phase), steps in events.items()
+    # Every contact pair, per phase, in order of first appearance (sorted within a step).
+    others = frozenset(env.blocks) - {name}
+    events: dict[tuple[tuple[str, str], str], tuple[list[int], list[float]]] = {}
+    for i, (phase, pairs, forces) in enumerate(
+        zip(phase_of, monitor.pairs, monitor.forces, strict=True)
+    ):
+        for pair in sorted(pairs):
+            steps, peaks = events.setdefault((pair, phase), ([], []))
+            steps.append(i + 1)
+            peaks.append(forces[pair])
+    contacts = tuple(
+        ContactEvent(
+            "-".join(pair),
+            phase,
+            steps[0],
+            len(steps),
+            peak_force=max(peaks),
+            unintended=is_unintended(pair, phase, name, others),
+            kind="environment" if ENVIRONMENT & set(pair) else "object",
+        )
+        for (pair, phase), (steps, peaks) in events.items()
     )
+    unintended = tuple(e for e in contacts if e.unintended)
 
     table_z = env.config.table_height
     checks = [
@@ -417,6 +490,34 @@ def pick_and_place(
         (not placement.touching_robot, "still touching the robot after settling"),
     ]
     failure = next((reason for ok, reason in checks if not ok), "")
+
+    objects = tuple(
+        object_outcome(
+            start[n],
+            object_record(env, n),
+            np.array([p for p, _ in monitor.poses[n]]),
+            np.array([q for _, q in monitor.poses[n]]),
+            table,
+            thresholds,
+            tolerances,
+        )
+        for n in env.blocks
+    )
+    evidence = OutcomeEvidence(
+        target=name,
+        grasp=grasp,
+        grasp_success=grasp.success,
+        phases=tuple((p.name, p.reached) for p in phases),
+        abort=abort,
+        gripper_empty=gripper_empty,
+        dropped=bool(lost),
+        drop_phase=phase_of[lost[0]] if lost else "",
+        released=released,
+        placement=placement,
+        objects=objects,
+        contacts=contacts,
+        table=table,
+    )
     return PickPlaceResult(
         success=not failure,
         failure_reason=failure,
@@ -431,4 +532,7 @@ def pick_and_place(
         control_steps=len(monitor.pairs),
         sim_time=float(env.sim.data.time - start_sim),
         wall_time=time.perf_counter() - start_wall,
+        objects=objects,
+        evidence=evidence,
+        label=outcome(evidence, thresholds),
     )

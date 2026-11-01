@@ -28,6 +28,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "slow: long simulation runs (minutes); deselect with -m 'not slow'",
+]
 
 [tool.ruff]
 line-length = 100

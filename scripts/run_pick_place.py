@@ -54,6 +54,11 @@ def trial(env, config: str, scene_seed: int, placement: Placement | None) -> dic
         steps=r.control_steps,
         sim_s=round(r.sim_time, 3),
         wall_s=round(r.wall_time, 3),
+        # Scene outcome (M1.3a, outcome.outcome); after the M1.2 columns, which
+        # data/validation/pick_place_m1_2.csv freezes.
+        y=r.label.y,
+        failure_stage=r.label.failure_stage,
+        flags=";".join(r.label.names),
     )
 
 
@@ -69,6 +74,8 @@ def summarise(rows: list[dict]) -> None:
     print(f"Placements: {count('success')}/{n} succeeded; grasps {count('grasp_success')}/{n}")
     failures = [(r["config"], r["failure_reason"]) for r in rows if not r["success"]]
     print(f"Failures: {failures or 'none'}")
+    stages = [(r["config"], r["failure_stage"], r["flags"]) for r in rows if r["flags"]]
+    print(f"Scene outcome y = 1: {count('y')}/{n}; flagged: {stages or 'none'}")
     print(
         f"In goal {count('in_goal')}/{n}, upright {count('upright')}/{n}, on table "
         f"{count('on_table')}/{n}, at rest {count('at_rest')}/{n}, released "
