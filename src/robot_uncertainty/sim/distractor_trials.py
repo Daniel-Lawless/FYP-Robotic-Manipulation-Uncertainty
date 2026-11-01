@@ -184,8 +184,17 @@ def swept_clearance(env: TabletopEnv, scene: Scene, heading: float) -> float:
     )
 
 
-def row(scene: Scene, choice: str, result: PickPlaceResult, action: GraspAction | None) -> dict:
-    """One CSV row describing an attempt and the distractor's outcome (if any)."""
+def row(
+    scene: Scene,
+    choice: str,
+    result: PickPlaceResult,
+    action: GraspAction | None,
+    extra: dict | None = None,
+) -> dict:
+    """One CSV row describing an attempt and the distractor's outcome (if any).
+
+    extra holds an experiment's own columns, placed after the M1.3a columns and before
+    the M1.3a.1 ones."""
     g, label = result.grasp, result.label
     objects = {o.name: o for o in result.objects}
     target = scene.layout[TARGET]
@@ -233,4 +242,65 @@ def row(scene: Scene, choice: str, result: PickPlaceResult, action: GraspAction 
             d_com_outside_base=d.com_outside_base,
             d_contacts=";".join(d.final_contacts),
         )
+    out.update(extra or {})
+    # M1.3a.1: the substep-resolution evidence behind y, flags and the d_ maxima above,
+    # and the control-step (endpoint) assessment of M1.3a for comparison.
+    historical = result.evidence.contacts
+    out.update(
+        historical_pairs=";".join(sorted({e.pair for e in historical})),
+        historical_unintended=";".join(
+            f"{e.pair}@{e.phase}x{e.steps}/{e.substeps}:{e.peak_force:.1f}N"
+            for e in historical
+            if e.unintended
+        ),
+        endpoint_y=result.endpoint_label.y,
+        endpoint_failure_stage=result.endpoint_label.failure_stage,
+        endpoint_flags=";".join(result.endpoint_label.names),
+    )
+    if d is not None:
+        e = next(o for o in result.endpoint_objects if o.name == DISTRACTOR)
+        out.update(
+            d_max_endpoint_mm=round(1000 * e.max_displacement, 3),
+            d_tilt_max_endpoint_deg=round(float(np.degrees(e.tilt_max)), 3),
+        )
     return out
+
+
+# Sampled-layout seeds (tall distractor, legacy-equivalent action) where M1.3a's
+# control-step contacts missed a target-distractor impact that toppled the distractor.
+KNOWN_MISSES = frozenset({3, 8, 30, 49})
+
+
+def sampling_row(scene: Scene, choice: str, result: PickPlaceResult) -> dict:
+    """Endpoint (control-step) against historical (substep) evidence for one attempt.
+
+    Pair counts are of distinct role pairs over the whole attempt, whatever the phase,
+    from all events of each stream (not only the unintended ones).
+    """
+    endpoint = {e.pair for e in result.endpoint_contacts}
+    historical = {e.pair for e in result.evidence.contacts}
+    hit = f"{DISTRACTOR}-{TARGET}"
+    d = next(o for o in result.objects if o.name == DISTRACTOR)
+    e = next(o for o in result.endpoint_objects if o.name == DISTRACTOR)
+    return dict(
+        config=scene.config,
+        scene_seed=scene.scene_seed,
+        choice=choice,
+        known_miss=scene.config == f"sampled{scene.scene_seed}"
+        and scene.scene_seed in KNOWN_MISSES,
+        endpoint_pairs=len(endpoint),
+        historical_pairs=len(historical),
+        missed_pairs=";".join(sorted(historical - endpoint)),
+        endpoint_collision_object="collision_object" in result.endpoint_label.flags,
+        historical_collision_object="collision_object" in result.label.flags,
+        endpoint_target_distractor=hit in endpoint,
+        historical_target_distractor=hit in historical,
+        d_max_endpoint_mm=round(1000 * e.max_displacement, 3),
+        d_max_mm=round(1000 * d.max_displacement, 3),
+        d_tilt_max_endpoint_deg=round(float(np.degrees(e.tilt_max)), 3),
+        d_tilt_max_deg=round(float(np.degrees(d.tilt_max)), 3),
+        endpoint_y=result.endpoint_label.y,
+        y=result.label.y,
+        endpoint_failure_stage=result.endpoint_label.failure_stage,
+        failure_stage=result.label.failure_stage,
+    )

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import platform
+import subprocess
+import sys
 import time
 from collections import Counter
 from pathlib import Path
 
+import mujoco
 import numpy as np
+import robosuite
 
 from robot_uncertainty.sim import distractor_trials as trials
 from robot_uncertainty.sim.scene import (
@@ -42,9 +49,8 @@ def far() -> list[dict]:
     env, rows = env_with(DISTRACTOR_TALL), []
     for scene, distance in trials.far_scenes(env):
         result, action = trials.attempt(env, scene, trials.legacy_action)
-        r = trials.row(scene, "legacy", result, action)
-        r["hand_clearance_mm"] = round(1000 * distance, 1)
-        rows.append(r)
+        extra = {"hand_clearance_mm": round(1000 * distance, 1)}
+        rows.append(trials.row(scene, "legacy", result, action, extra))
     env.close()
     return rows
 
@@ -74,15 +80,18 @@ def carry() -> list[dict]:
     return rows
 
 
-def throughput(attempts: int = 50) -> list[dict]:
+def throughput(attempts: int = 50, comparison: list[dict] | None = None) -> list[dict]:
     """Attempts per second with one tall distractor placed by the existing random
-    sampler (seeds 0-49), legacy action, no rendering."""
+    sampler (seeds 0-49), legacy action, no rendering. Appends each attempt's endpoint
+    vs substep evidence (sampling_comparison.csv) to comparison if given."""
     env, rows = env_with(DISTRACTOR_TALL), []
     start = time.perf_counter()
     for seed in range(attempts):
         scene = trials.Scene(f"sampled{seed}", seed, dict(sample_layout(env.config, seed)))
         result, action = trials.attempt(env, scene, trials.legacy_action)
         rows.append(trials.row(scene, "legacy", result, action))
+        if comparison is not None:
+            comparison.append(trials.sampling_row(scene, "legacy", result))
     elapsed = time.perf_counter() - start
     env.close()
     wall = np.array([r["wall_s"] for r in rows])
@@ -127,8 +136,52 @@ def summarise(name: str, rows: list[dict]) -> None:
             )
 
 
-# Writes one CSV per experiment (default results/m1_3a/<experiment>.csv) and prints a
-# summary. Scenes are explicit and noise-free; see robot_uncertainty.sim.distractor_trials.
+def provenance(argv: list[str]) -> dict:
+    """What generated the CSVs: the base commit with any working-tree changes, hashes of
+    the implementation's sources, package versions, platform and physics settings."""
+    root = Path(__file__).resolve().parents[1]
+
+    def git(*args: str) -> str:
+        done = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+        return done.stdout.rstrip("\n")  # keep porcelain status columns
+
+    sources = sorted((root / "src" / "robot_uncertainty").rglob("*.py")) + [Path(__file__)]
+    env = env_with(None)
+    model = env.sim.model._model
+    physics = dict(
+        lite_physics=env.lite_physics,
+        model_timestep=env.model_timestep,
+        control_timestep=env.control_timestep,
+        substeps_per_control_step=int(env.control_timestep / env.model_timestep),
+        integrator=mujoco.mjtIntegrator(model.opt.integrator).name,
+        cone=mujoco.mjtCone(model.opt.cone).name,
+        impratio=float(model.opt.impratio),
+    )
+    env.close()
+    return dict(
+        base_commit=git("rev-parse", "HEAD"),
+        working_tree_changes=git(
+            "status", "--porcelain", "--untracked-files=all", "--", "src", "scripts", "tests"
+        ).splitlines(),
+        source_sha256={
+            str(p.resolve().relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sources
+        },
+        versions=dict(
+            python=platform.python_version(),
+            numpy=np.__version__,
+            mujoco=mujoco.__version__,
+            robosuite=robosuite.__version__,
+        ),
+        platform=platform.platform(),
+        physics=physics,
+        command=["python", "scripts/run_distractor_trials.py", *argv],
+    )
+
+
+# Writes one CSV per experiment (default results/m1_3a/<experiment>.csv), plus
+# sampling_comparison.csv with throughput and provenance.json, and prints a summary.
+# Scenes are explicit and noise-free; see robot_uncertainty.sim.distractor_trials.
 def main() -> None:
     parser = argparse.ArgumentParser(description="M1.3a grasp-axis and distractor diagnostics.")
     parser.add_argument(
@@ -138,14 +191,25 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true", help="replace existing CSVs")
     args = parser.parse_args()
     chosen = args.only or list(EXPERIMENTS)
-    for name in chosen:
-        out = args.out_dir / f"{name}.csv"
+    outputs = [f"{name}.csv" for name in chosen] + ["provenance.json"]
+    if "throughput" in chosen:
+        outputs.append("sampling_comparison.csv")
+    for name in outputs:
+        out = args.out_dir / name
         if out.exists() and not args.overwrite:
             parser.error(f"{out} exists; pass --overwrite to replace it")
     for name in chosen:
-        rows = globals()[name]()
+        comparison: list[dict] = []
+        rows = throughput(comparison=comparison) if name == "throughput" else globals()[name]()
         summarise(name, rows)
         write_rows(args.out_dir / f"{name}.csv", rows, overwrite=args.overwrite)
+        if comparison:
+            write_rows(
+                args.out_dir / "sampling_comparison.csv", comparison, overwrite=args.overwrite
+            )
+    (args.out_dir / "provenance.json").write_text(
+        json.dumps(provenance(sys.argv[1:]), indent=1) + "\n"
+    )
 
 
 if __name__ == "__main__":
