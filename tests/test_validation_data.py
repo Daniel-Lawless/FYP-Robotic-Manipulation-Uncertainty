@@ -1,4 +1,5 @@
 import itertools
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -73,6 +74,130 @@ def test_palm_clearance_dataset_covers_the_design() -> None:
         assert [group[0][k] for k in ("x_cm", "y_cm", "yaw_deg")] == [
             other[0][k] for k in ("x_cm", "y_cm", "yaw_deg")
         ]
+
+
+M1_3A = DATA / "m1_3a"
+M1_3A_COLUMNS = [
+    "config", "scene_seed", "x_cm", "y_cm", "yaw_deg", "choice", "closing_deg", "success",
+    "failure_reason", "y", "failure_stage", "flags", "wrist_deg", "commanded_face_axis",
+    "face_axis", "timeouts", "unintended_contacts", "centre_error_mm", "steps", "sim_s",
+    "wall_s",
+]  # fmt: skip
+M1_3A_DISTRACTOR_COLUMNS = [
+    "d_x_cm", "d_y_cm", "d_yaw_deg", "d_max_mm", "d_final_mm", "d_tilt_max_deg",
+    "d_tilt_final_deg", "d_face_start", "d_face_final", "d_toppled", "d_leaning",
+    "d_unsettled", "d_com_outside_base", "d_contacts",
+]  # fmt: skip
+# Appended by M1.3a.1 after every M1.3a column.
+SUBSTEP_COLUMNS = [
+    "historical_pairs", "historical_unintended", "endpoint_y", "endpoint_failure_stage",
+    "endpoint_flags",
+]  # fmt: skip
+SUBSTEP_DISTRACTOR_COLUMNS = ["d_max_endpoint_mm", "d_tilt_max_endpoint_deg"]
+SAMPLING_COLUMNS = [
+    "config", "scene_seed", "choice", "known_miss", "endpoint_pairs", "historical_pairs",
+    "missed_pairs", "endpoint_collision_object", "historical_collision_object",
+    "endpoint_target_distractor", "historical_target_distractor", "d_max_endpoint_mm",
+    "d_max_mm", "d_tilt_max_endpoint_deg", "d_tilt_max_deg", "endpoint_y", "y",
+    "endpoint_failure_stage", "failure_stage",
+]  # fmt: skip
+KNOWN_MISSES = {3, 8, 30, 49}
+CORNERS = [f"corner{x}{y}" for x in ("-7", "+7") for y in ("-17", "+3")]
+
+
+def m1_3a(name: str) -> list[dict]:
+    return read_rows(M1_3A / f"{name}.csv")
+
+
+def test_m1_3a_datasets_keep_their_columns_and_append_the_substep_ones() -> None:
+    with_distractor = M1_3A_COLUMNS + M1_3A_DISTRACTOR_COLUMNS
+    added = SUBSTEP_COLUMNS + SUBSTEP_DISTRACTOR_COLUMNS
+    expected = {
+        "axes": M1_3A_COLUMNS + SUBSTEP_COLUMNS,
+        "far": with_distractor + ["hand_clearance_mm"] + added,
+        "beside": with_distractor + added,
+        "carry": with_distractor + added,
+        "throughput": with_distractor + added,
+        "sampling_comparison": SAMPLING_COLUMNS,
+    }
+    for name, columns in expected.items():
+        assert list(m1_3a(name)[0]) == columns, name
+
+
+def test_m1_3a_datasets_cover_their_designs() -> None:
+    axes = m1_3a("axes")
+    configs = [f"seed{s}" for s in range(50)] + CORNERS
+    assert [(r["config"], r["choice"]) for r in axes] == [
+        (c, f"candidate{i}") for c in configs for i in (0, 1)
+    ]
+    far = m1_3a("far")
+    assert len(far) == 20 and {r["choice"] for r in far} == {"legacy"}
+    assert all(float(r["hand_clearance_mm"]) >= 150 for r in far)
+    beside = m1_3a("beside")
+    assert [(r["config"], r["choice"]) for r in beside] == [
+        (f"beside{s}", f"{size}-{side}")
+        for size in ("tall", "short")
+        for s in range(10)
+        for side in ("A", "B")
+    ]
+    carry = m1_3a("carry")
+    assert len(carry) == 5 and {r["choice"] for r in carry} == {"legacy"}
+    throughput = m1_3a("throughput")
+    assert [(r["config"], r["scene_seed"]) for r in throughput] == [
+        (f"sampled{s}", str(s)) for s in range(50)
+    ]
+
+
+def pair_phases(column: str) -> set[str]:
+    """The pair@phase of each event in an unintended_contacts-style column."""
+    return {event.split("x")[0] for event in column.split(";") if event}
+
+
+def test_substep_columns_cover_the_endpoint_evidence() -> None:
+    for name in ("axes", "far", "beside", "carry", "throughput"):
+        for r in m1_3a(name):
+            # Every endpoint (legacy) unintended event is also a historical one.
+            assert pair_phases(r["unintended_contacts"]) <= pair_phases(
+                r["historical_unintended"]
+            ), (name, r["config"])
+            history = set(r["historical_pairs"].split(";"))
+            assert {p.split("@")[0] for p in pair_phases(r["historical_unintended"])} <= history
+            if "d_max_endpoint_mm" in r:
+                assert float(r["d_max_mm"]) >= float(r["d_max_endpoint_mm"])
+                assert float(r["d_tilt_max_deg"]) >= float(r["d_tilt_max_endpoint_deg"])
+
+
+def test_sampling_comparison_matches_the_throughput_attempts() -> None:
+    rows, throughput = m1_3a("sampling_comparison"), m1_3a("throughput")
+    assert [r["config"] for r in rows] == [r["config"] for r in throughput]
+    for r, t in zip(rows, throughput, strict=True):
+        assert (r["y"], r["failure_stage"]) == (t["y"], t["failure_stage"])
+        assert (r["endpoint_y"], r["endpoint_failure_stage"]) == (
+            t["endpoint_y"],
+            t["endpoint_failure_stage"],
+        )
+        assert int(r["historical_pairs"]) >= int(r["endpoint_pairs"])
+        for kind in ("collision_object", "target_distractor"):
+            if r[f"endpoint_{kind}"] == "True":
+                assert r[f"historical_{kind}"] == "True"
+        assert float(r["d_max_mm"]) >= float(r["d_max_endpoint_mm"])
+        miss = int(r["scene_seed"]) in KNOWN_MISSES
+        assert r["known_miss"] == str(miss)
+        if miss:  # the impacts M1.3a's control-step contacts missed
+            assert r["endpoint_target_distractor"] == "False"
+            assert r["historical_target_distractor"] == "True"
+            assert r["historical_collision_object"] == "True"
+            assert "distractor-target" in r["missed_pairs"].split(";")
+
+
+def test_m1_3a_provenance_is_recorded() -> None:
+    meta = json.loads((M1_3A / "provenance.json").read_text())
+    assert meta["base_commit"] == "9f7ce6b291a23e9fc03901219166c3fce5549a20"
+    assert meta["physics"]["substeps_per_control_step"] == 25
+    assert meta["physics"]["integrator"] == "mjINT_EULER" and meta["physics"]["lite_physics"]
+    assert "src/robot_uncertainty/sim/pick_place.py" in meta["source_sha256"]
+    assert set(meta["versions"]) == {"python", "numpy", "mujoco", "robosuite"}
+    assert meta["command"][:2] == ["python", "scripts/run_distractor_trials.py"]
 
 
 def test_write_rows_never_silently_overwrites(tmp_path: Path) -> None:

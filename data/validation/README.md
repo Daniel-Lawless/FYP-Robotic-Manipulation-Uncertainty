@@ -186,16 +186,17 @@ are provisional, implemented in `src/robot_uncertainty/sim/outcome.py` and teste
 
 **Records.** For every block, pick_and_place records the true state at the start of the
 attempt (after the scene has settled), its position and orientation after every 20 Hz
-control step, and the state after the final 0.25 s settle. Each block's outcome is a pure
-function of the start record, the final record and the recorded poses.
+control step and (since M1.3a.1) after every 2 ms physics substep, and the state after
+the final 0.25 s settle. Each block's outcome is a pure function of the start record,
+the final record and the recorded poses.
 
 **Displacement.** Final displacement is the planar distance between the start and final
 centres; maximum displacement is the largest planar distance from the start centre over
 every recorded pose, d_max = max_t ||p_xy(t) - p_xy(0)||, not the path length. A
 **non-target** block with d_max > `disturbance_threshold` = 3 cm fails the attempt
 (`displaced`), even if it later comes back near its start. The target is exempt: moving
-it is the task. Poses are sampled once per control step (20 Hz), so a peak between two
-steps is not seen.
+it is the task. Since M1.3a.1 the maximum is taken over every physics substep as well as
+every control step (see below); in M1.3a it was sampled once per control step only.
 
 **Toppling** is a final-state classification, not a tilt threshold. A block rests flat
 on a face (named by its signed body axis, `-z` for the bottom of a block standing as
@@ -242,12 +243,12 @@ non-target block displaced and no block toppled. `failure_stage` is the earliest
 flags (`collision_object`, `collision_environment`) are recorded without failing the
 attempt. `PickPlaceResult.success` and `failure_reason` keep their M1.2 meaning.
 
-**Contacts.** Contact pairs are read from MuJoCo's contact list after each control step,
-with each pair's peak total normal force. A contact lasting less than one control step
-(50 ms, 25 physics steps) can fall between samples and be missed: in 4 of 50 sampled
-tall-distractor scenes a target-distractor impact during the carry toppled the
-distractor with no contact recorded (the physics substeps show 49-57 steps of contact).
-The physical outcome (displaced, toppled) is still labelled correctly.
+**Contacts.** In M1.3a, contact pairs were read from MuJoCo's contact list after each
+control step only, so a contact between two endpoints could be missed: in 4 of 50
+sampled tall-distractor scenes a target-distractor impact during the carry toppled the
+distractor with no contact recorded (the physical outcome, displaced and toppled, was
+still labelled correctly). Since M1.3a.1 the label's contact evidence comes from every
+physics substep; see "M1.3a.1 substep-resolution evidence" below.
 
 ## M1.3a contact parameters (`contact_params.csv`)
 
@@ -281,15 +282,18 @@ effective friction: every geom the target touches has sliding friction of at lea
 and the element-wise maximum takes it. Pad-target stays at 2, target-table and
 target-distractor at 1, and every pair was in contact on the same number of steps. Randomising only
 the object's friction would therefore have no physical effect in this scene; it needs a
-different design (contact pairs, priorities, or changing both geoms), to be decided before
-friction randomisation is implemented. The rules themselves (priority, solmix weighting,
+different design, for example contact pairs, priorities or changing both geoms. The
+friction-randomisation design is deferred until before the E0 freeze. The rules themselves (priority, solmix weighting,
 direct-form solref, explicit pairs, exclusions, the global override) are checked against
 MuJoCo on a synthetic model in `tests/sim/test_contact_params.py`.
 
-## M1.3a distractor diagnostics (not committed; `results/m1_3a/`)
+## M1.3a distractor diagnostics (`m1_3a/`)
 
-`python scripts/run_distractor_trials.py` writes one CSV per experiment to `results/m1_3a/`
-(git-ignored) and prints the summary. Explicit, noise-free scenes; one distractor.
+`python scripts/run_distractor_trials.py` writes one CSV per experiment (by default to the
+git-ignored `results/m1_3a/`) and prints the summary. Explicit, noise-free scenes; one
+distractor. The figures below are M1.3a's; since M1.3a.1 the committed copies in `m1_3a/`
+also carry the substep-resolution evidence, which changed none of these counts (see the
+next section).
 
 - **Both grasp axes, isolated** (`axes`, seeds 0-49 and the four corners, both candidates):
   108/108 succeeded with y = 1, and the commanded face axis equalled the gripped one every
@@ -318,6 +322,174 @@ MuJoCo on a synthetic model in `tests/sim/test_contact_params.py`.
   not keep the hand or the carry path clear of a tall distractor.
 
 No block was `unsettled` after the normal 0.25 s settle in any of these runs.
+
+## M1.3a.1 substep-resolution evidence (`m1_3a/`)
+
+**Verified physics timing** (robosuite 1.5.2, MuJoCo 3.9.0, this scene). `env.step` runs
+`int(control_timestep / model_timestep)` = 25 physics substeps of 2 ms per 50 ms control
+step (lite physics, Euler integrator, elliptic cone, `impratio` 20). Each substep is
+`sim.step1()` (kinematics, collision), `_pre_action` (controls), `sim.step2()` (forces,
+constraint solve, integration), then `_update_observables`.
+
+- After `step2`, the contact list, `xpos`/`xquat` and the constraint forces (read with
+  `mj_contactForce`) describe the configuration at the start of that substep, before
+  integration. `qpos`/`qvel` describe the state after it.
+- The alternate path (`lite_physics=False`: `sim.forward()`, `_pre_action`, `sim.step()`)
+  gives the same timing.
+- Nothing after the last substep (`_update_observables`, `_post_action`, the
+  observations) changes these arrays before `env.step` returns.
+- So the legacy endpoint quantities read after `env.step` describe the configuration at
+  the start of the control step's last substep.
+
+The Euler, implicit and implicitfast integrators are checked on copied data
+(`tests/sim/test_substep_evidence.py`); `StepMonitor` refuses RK4, whose intermediate
+stages recompute these arrays. Each block is a direct child of the world with one free
+joint, so its post-integration world pose is its free-joint `qpos` slice. This agrees with
+`xpos`/`xquat` after `mj_kinematics` on a copy to within 1e-12.
+
+**Two measurement streams.** `StepMonitor` keeps the endpoint stream (after every
+`env.step`) unchanged and adds a substep stream, recorded by instance wrappers on
+`sim.step2` and `sim.step` that only read existing arrays: no extra `mj_forward`,
+`mj_kinematics`, collision or step calls.
+
+- **Endpoint stream, unchanged:** `pairs`, `forces`, `poses`, `block_positions`,
+  `eef_positions`, `penetration`.
+  - Every legacy field comes from it, exactly as before: `unintended_contacts`,
+    `collided`, `max_penetration`, `max_slip`, `dropped`, `released`, `failure_reason`,
+    `success`, `control_steps`, `sim_time`.
+  - `StepMonitor.touching` is an endpoint query on the last control step's contact set,
+    never on the substeps of that interval. So `released` (no robot contact at the end
+    of the release phase) and the release failure are unchanged. A finger contact
+    earlier in the final release interval is recorded in the history but does not make
+    the block "not released".
+  - `max_penetration` remains an endpoint maximum.
+- **Substep stream:** for each substep, every contact-list entry up to `ncon`, with no
+  force threshold, mapped to role pairs as before. Normal forces are summed over all
+  contact points of a pair within the substep, and each block's pose is recorded after
+  integration.
+  - Every substep takes the phase of the control step it ran in.
+  - A contact-list entry need not carry force. In the sampled-layout seed 0 attempt,
+    104 of 48,348 entries had exactly zero normal force, all of them active constraints
+    with 0.0006-0.42 mm penetration (contacts the solver left unloaded, for example a
+    block separating within the substep).
+
+**Historical contact events** (`OutcomeEvidence.contacts`) hold one event per pair and
+phase:
+
+| Field | Meaning |
+|---|---|
+| `first_step` | control step of first contact, counted from 1 over the whole attempt |
+| `steps` | distinct control intervals in which the pair touched in at least one substep |
+| `first_substep` | physics substep of first contact, counted from 1 over the attempt |
+| `substeps` | distinct substeps in which the pair touched (once per substep, however many contact points) |
+| `peak_force` | largest per-substep total normal force, N |
+
+- Events are in order of first substep, with pairs sorted within a substep. The
+  endpoint events keep M1.3a's ordering (first control step, sorted within a step, which
+  M1.3a already made deterministic). Their `first_substep` and `substeps` are `None`.
+- `PickPlaceResult.endpoint_contacts`, `endpoint_objects` and `endpoint_label` keep the
+  M1.3a control-step assessment for comparison.
+
+**Maxima.** `max_displacement` and `tilt_max` are now taken over the start record, every
+control-step pose, every substep pose and the final record, with the same definitions
+(planar distance from the unchanged start record; tilt of the original vertical axis).
+Final displacement, final tilt, resting faces, toppling and the other final-state
+classifications still use the final record.
+
+**What changed** (all 223 diagnostic attempts, captured at full precision before and
+after the change, in the same order):
+
+- **Simulation and legacy fields unchanged:**
+  - every legacy field (excluding wall time), including the legacy contact events and
+    their order, is identical;
+  - final `qpos`, `qvel`, time and block poses are bitwise identical;
+  - the retained endpoint assessment reproduces M1.3a's objects, contact events and
+    labels exactly.
+  - The M1.2 references (final qpos for seeds 1000-1009 and the 204 CSV rows) still
+    match.
+- **Labels:** no attempt changed y, `failure_stage` or a disqualifying flag.
+  `collision_object` was added on exactly the four impacts M1.3a missed (below); no other
+  flag changed.
+- **Maxima:** maximum planar displacement increased for 265 of 338 block outcomes and
+  maximum tilt for 266 of 338; at least one of the two increased for 281 of 338. The
+  increases were at most 0.81 mm and 2.19 degrees. The closest distractor to the 3 cm
+  displacement threshold stays at 28.13 mm (`sampled31`).
+- **The four known misses** (sampled-layout seeds 3, 8, 30 and 49, tall distractor,
+  legacy-equivalent action) now have a historical `distractor-target` event during
+  `carry`:
+
+| Scene | First control step | Control intervals | First substep | Substeps | Peak force |
+|---|---|---|---|---|---|
+| `sampled3` | 88 | 6 | 2179 | 42 | 4.93 N |
+| `sampled8` | 91 | 5 | 2257 | 47 | 5.04 N |
+| `sampled30` | 100 | 5 | 2481 | 47 | 5.55 N |
+| `sampled49` | 96 | 6 | 2376 | 42 | 4.56 N |
+
+The earlier M1.3a diagnostic reported 49–57 contact substeps for these impacts. The
+M1.3a.1 recorder measures 42–47 distinct physics substeps with target–distractor contact,
+counting each pair once per substep regardless of the number of contact points. The
+earlier figures are superseded by the values in this table; the discrepancy with the
+earlier diagnostic has not been reconciled.
+
+In all four, y = 0 at stage `scene` (toppled and displaced) both before and after.
+
+**Runtime.** I timed the throughput sequence (50 sampled-layout tall-distractor attempts
+after a 3-attempt warm-up, no rendering, nothing else running) in three matched batches
+before and after the change:
+
+| | Median pick_and_place | Batch medians | Batch totals |
+|---|---|---|---|
+| Before | 1.289 s | 1.247-1.302 s | 63.9-67.4 s |
+| After | 1.388 s | 1.376-1.394 s | 70.3-70.7 s |
+
+- The median is 7.6% slower, and batch totals 7.9% (per batch 4.9-10.4%).
+- Matched seed by seed, the median slowdown is 9.9%.
+- Recording costs about 16 us per substep while holding the block (14 contacts), mostly
+  `mj_contactForce` and the per-pair sums.
+
+**Retained limitations.**
+- The final record, the placement check, the release verification and the legacy
+  contact fields are still endpoint measurements.
+- Contact force is sampled once per 2 ms substep, so an impact shorter than a substep
+  can still be missed.
+- Abort handling is unchanged and deferred to M1.3c1. When a grasp phase times out or the
+  gripper closes on nothing, `pick_and_place` skips the remaining movements, and the
+  robot holds still with the gripper closed through the settle phase. Depending on how
+  the grasp failed, the target may still be held, pinched, or resting on the table or the
+  distractor, and the label records it from the final state.
+
+**Datasets** (`m1_3a/`, regenerated with the command below).
+- `axes.csv`, `far.csv`, `beside.csv`, `carry.csv` and `throughput.csv` keep every
+  M1.3a column in its position and meaning; `unintended_contacts` is still the legacy
+  endpoint list. `y`, `failure_stage`, `flags`, `d_max_mm` and `d_tilt_max_deg` now
+  report the substep-resolution label and maxima.
+- Appended columns:
+  - `historical_pairs`: distinct historical role pairs.
+  - `historical_unintended`: historical unintended events, as
+    `pair@phase x control-intervals / substeps : peak N`.
+  - `endpoint_y`, `endpoint_failure_stage`, `endpoint_flags`: the M1.3a control-step
+    label.
+  - `d_max_endpoint_mm`, `d_tilt_max_endpoint_deg`: the control-step maxima.
+- `sampling_comparison.csv` has one row per sampled-layout throughput attempt. Columns:
+  - distinct pair counts over all events of each stream, regardless of phase;
+  - the pairs only the history saw;
+  - `collision_object` and target-distractor contact under each method;
+  - whether the attempt is one of the four known misses;
+  - both streams' distractor maxima;
+  - both labels.
+- `provenance.json` records:
+  - the base commit (`9f7ce6b`, the committed M1.3a);
+  - the working-tree changes the data was generated from;
+  - SHA-256 hashes of every source file of the implementation and the runner;
+  - package versions, platform, physics settings and the command.
+
+  The committed data was generated from that working-tree implementation, not from the
+  unchanged baseline.
+
+`tests/test_validation_data.py` checks the columns, the design coverage and the
+consistency of the two streams without MuJoCo. `tests/sim/test_m1_3a_validation.py`
+(slow) regenerates all six CSVs and compares them with `diff_rows`, which skips only
+`wall_s`.
 
 ## Reproducing
 
@@ -355,7 +527,9 @@ python scripts/run_pick_place.py --first-seed 1000 --seeds 200 --corners --out r
 python scripts/capture_m1_2_qpos.py --out results/m1_2_reference_qpos.npz
 python scripts/diagnose_contact_params.py --out results/contact_params.csv
 python scripts/run_distractor_trials.py            # about 6 minutes
-pytest -m "not slow"                               # skips the four longest checks
+# M1.3a.1 validation data, including sampling_comparison.csv and provenance.json:
+python scripts/run_distractor_trials.py --out-dir data/validation/m1_3a --overwrite
+pytest -m "not slow"                               # skips the longest checks
 ```
 
 Every column except `wall_s` is reproduced exactly on this setup. MuJoCo is

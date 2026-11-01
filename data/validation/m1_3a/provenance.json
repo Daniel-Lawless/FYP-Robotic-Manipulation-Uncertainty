@@ -1,0 +1,61 @@
+{
+ "base_commit": "9f7ce6b291a23e9fc03901219166c3fce5549a20",
+ "working_tree_changes": [
+  " M scripts/run_distractor_trials.py",
+  " M src/robot_uncertainty/sim/distractor_trials.py",
+  " M src/robot_uncertainty/sim/outcome.py",
+  " M src/robot_uncertainty/sim/pick_place.py",
+  " M tests/sim/test_distractor.py",
+  " M tests/sim/test_outcome_evidence.py",
+  " M tests/test_validation_data.py",
+  "?? tests/sim/test_m1_3a_validation.py",
+  "?? tests/sim/test_substep_evidence.py"
+ ],
+ "source_sha256": {
+  "src/robot_uncertainty/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/analysis/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/dataset/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/ensemble/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/intervention/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/policies/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/rl/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/sim/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/sim/actions.py": "9697d8fafc7eaef56ed994749daa4ed5a33220d9b59ba731c39ee5a8814b64c4",
+  "src/robot_uncertainty/sim/contact_params.py": "9edf4e60c7a075fbde10f05be3bc1151d0d9f48e617ebf0a1a9134db3c8256bd",
+  "src/robot_uncertainty/sim/contacts.py": "8aecca0ef0d345b78f992a27b77359bd735e1642f26ab82785293835c83d04e2",
+  "src/robot_uncertainty/sim/distractor_trials.py": "81f4cbf6e909db7781de3c289a258fc4cb1cb44ede5f5405b2ee12dd6c7157ac",
+  "src/robot_uncertainty/sim/layouts.py": "71e99e799fdc868ad58e03967fc5156d595a66777b4714cce788f98ebe3c78e9",
+  "src/robot_uncertainty/sim/lift.py": "874678f12822b5052e1539d71a9cd186a61ddbd575c6c46bd040e70578002733",
+  "src/robot_uncertainty/sim/outcome.py": "77fea42740b2377e2e603bddc337b10723818c72a47d6cad89799adcd568f643",
+  "src/robot_uncertainty/sim/pick_place.py": "8f0c6547ea4005929686f1571fbf10a97998a29c0d239e669b7b8a90ecd9df72",
+  "src/robot_uncertainty/sim/primitives.py": "5b982bb4bfa31e6a8f4d4b301d9d4b038000a55e08d216d3d2c1878f43747fbd",
+  "src/robot_uncertainty/sim/scene.py": "8406113279f7e5137addd67e79960573f8de3e6299d29effa7cd230485152020",
+  "src/robot_uncertainty/sim/tabletop.py": "5fb85450e78dd2b30b8994303d0d57d94063bda0b9d2b841f39861cb23b66e27",
+  "src/robot_uncertainty/utils/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "src/robot_uncertainty/utils/datasets.py": "20beca84db41354199f5e5738492b33235ba39fd87f8568561c9d8cbb78ab5d1",
+  "scripts/run_distractor_trials.py": "bb7f7633c471bb9a8928af41ff9888585f17da6f1d2d17b44538c70c20185728"
+ },
+ "versions": {
+  "python": "3.12.3",
+  "numpy": "1.26.4",
+  "mujoco": "3.9.0",
+  "robosuite": "1.5.2"
+ },
+ "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+ "physics": {
+  "lite_physics": true,
+  "model_timestep": 0.002,
+  "control_timestep": 0.05,
+  "substeps_per_control_step": 25,
+  "integrator": "mjINT_EULER",
+  "cone": "mjCONE_ELLIPTIC",
+  "impratio": 20.0
+ },
+ "command": [
+  "python",
+  "scripts/run_distractor_trials.py",
+  "--out-dir",
+  "data/validation/m1_3a",
+  "--overwrite"
+ ]
+}
