@@ -1,24 +1,3 @@
-"""Paired comparison of fixed-orientation and yaw-aligned top grasps on the Lift cube.
-
-For each seed the same initial scene is grasped twice, from two fresh environments:
-
-- fixed: fingers always close along world x (target yaw 0, the original controller's
-  TOP_DOWN target), whatever the cube's yaw;
-- aligned: fingers close on the face pair needing the least wrist rotation.
-
-The fixed controller is a reconstruction of the original: it uses the original fixed
-target, but the current controller code (rotation commands clipped by magnitude rather
-than per component), so it is not an exact replay of the original implementation.
-
-The cube's recorded dimensions and true yaw are saved with each row, so the geometric
-span the fingers should close to can be computed for either controller. The committed
-dataset is data/validation/grasp_alignment.csv (see the README there); by default this
-script writes to the git-ignored results/ and never overwrites without --overwrite.
-
-Usage:
-    python scripts/compare_grasp_alignment.py [--seeds 50] [--out PATH] [--overwrite]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -31,6 +10,13 @@ from robot_uncertainty.sim.primitives import settle, top_grasp
 from robot_uncertainty.utils.datasets import write_rows
 
 
+# For each seed the same initial scene is grasped twice, from two fresh environments:
+# - fixed: fingers always close along world x (target yaw 0, the original controller's
+#   TOP_DOWN target), whatever the cube's yaw;
+# - aligned: fingers close on the face pair needing the least wrist rotation.
+# The fixed controller is a reconstruction of the original: it uses the original fixed
+# target, but the current controller code (rotation commands clipped by magnitude rather
+# than per component), so it is not an exact replay of the original implementation.
 def grasp(seed: int, controller: str) -> dict:
     env = make_lift_env(seed)
     env.reset()
@@ -60,6 +46,10 @@ def grasp(seed: int, controller: str) -> dict:
     )
 
 
+# The cube's recorded dimensions and true yaw are saved with each row, so the geometric
+# span the fingers should close to can be computed for either controller. The committed
+# dataset is data/validation/grasp_alignment.csv (see the README there); by default this
+# script writes to the git-ignored results/ and never overwrites without --overwrite.
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fixed vs yaw-aligned top grasps, paired.")
     parser.add_argument("--seeds", type=int, default=50, help="seeds 0..N-1")

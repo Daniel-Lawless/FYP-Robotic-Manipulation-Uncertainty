@@ -1,5 +1,3 @@
-"""Every script must start and print its usage (needs MuJoCo for the imports)."""
-
 import subprocess
 import sys
 from pathlib import Path

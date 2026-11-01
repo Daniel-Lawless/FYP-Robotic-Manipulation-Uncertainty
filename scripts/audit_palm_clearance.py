@@ -1,20 +1,3 @@
-"""Palm-block clearance and contacts, step by step, for centre and raised top grasps.
-
-Grasps the 4 x 4 x 8 cm target in the custom tabletop scene in 16 configurations (the
-layouts of scene seeds 0-11, and the four extreme workspace centres at 45 deg yaw), each
-with two grasp points: the block centre (grasp_height 0, the original behaviour) and
-the raised point from top_grasp_height (+15 mm). After every control step it records
-MuJoCo's signed palm-block distance and the actual palm and finger-pad contacts, using
-robot_uncertainty.sim.contacts (the method of the palm-clearance regression test).
-
-The committed dataset is data/validation/palm_clearance.csv (see the README there); by
-default this script writes to the git-ignored results/ and never overwrites without
---overwrite. There is no wall-clock column, so a rerun must match it exactly.
-
-Usage:
-    python scripts/audit_palm_clearance.py [--out PATH] [--overwrite]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -39,6 +22,12 @@ STRATEGIES = {"centre": 0.0, "raised": None}  # None: top_grasp_height(observed 
 PROBE_MARGINS = (0.05, 0.5)
 
 
+# Grasps the 4 x 4 x 8 cm target in the custom tabletop scene in 16 configurations (the
+# layouts of scene seeds 0-11, and the four extreme workspace centres at 45 deg yaw), each
+# with two grasp points: the block centre (grasp_height 0, the original behaviour) and
+# the raised point from top_grasp_height (+15 mm). After every control step it records
+# MuJoCo's signed palm-block distance and the actual palm and finger-pad contacts, using
+# robot_uncertainty.sim.contacts (the method of the palm-clearance regression test).
 def audit(env, config: str, scene_seed: int, placement, strategy: str) -> list[dict]:
     env.reset(scene_seed=scene_seed)
     if placement is not None:
@@ -70,6 +59,9 @@ def audit(env, config: str, scene_seed: int, placement, strategy: str) -> list[d
     ]
 
 
+# The committed dataset is data/validation/palm_clearance.csv (see the README there); by
+# default this script writes to the git-ignored results/ and never overwrites without
+# --overwrite. There is no wall-clock column, so a rerun must match it exactly.
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Step-by-step palm clearance and contacts, centre vs raised top grasp."

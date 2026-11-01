@@ -1,20 +1,3 @@
-"""Palm and finger-pad contact measurements during a grasp, from MuJoCo's own geometry.
-
-Two kinds of measurement are kept apart:
-
-- actual contacts: entries in MuJoCo's contact list for the live simulation, with the
-  normal force each one carries;
-- geometric clearance: the signed palm-block distance from MuJoCo's collider, computed
-  on a copy of the model with a detection margin on the palm. Within that margin the
-  collider reports the pair with its true distance (negative means penetration). Up to
-  a 10 cm margin, penetration depths match the live simulation's own contacts to within
-  0.15 mm; at 50 cm they drift by up to 0.3 mm, while separations agree at any margin.
-  So the smallest margin that reports the pair is used: 5 cm, then any wider ones.
-
-mj_geomDistance is not used: for the Panda palm mesh against a box it returns spurious
-zeros while the true gap is several centimetres.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -42,6 +25,17 @@ class ContactSample:
     pad_points: tuple[np.ndarray, np.ndarray]  # each pad's contact points, block frame
 
 
+# Two kinds of measurement are kept apart:
+# - actual contacts: entries in MuJoCo's contact list for the live simulation, with the
+#   normal force each one carries;
+# - geometric clearance: the signed palm-block distance from MuJoCo's collider, computed
+#   on a copy of the model with a detection margin on the palm. Within that margin the
+#   collider reports the pair with its true distance (negative means penetration). Up to
+#   a 10 cm margin, penetration depths match the live simulation's own contacts to within
+#   0.15 mm; at 50 cm they drift by up to 0.3 mm, while separations agree at any margin.
+#   So the smallest margin that reports the pair is used: 5 cm, then any wider ones.
+# mj_geomDistance is not used: for the Panda palm mesh against a box it returns spurious
+# zeros while the true gap is several centimetres.
 class ContactProbe:
     """Measures palm clearance and pad contacts against one block of a TabletopEnv."""
 

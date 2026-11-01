@@ -1,20 +1,3 @@
-"""Figure for the M1.1 grasp-height correction, from data/validation/palm_clearance.csv.
-
-Panel A: minimum signed palm-block clearance over each grasp, centre vs raised grasp
-point, for each of the 16 configurations. Panel B: clearance through the grasp for the
-configuration where the raised grasp came closest, one row per grasp point, each with
-its own phase boundaries and contact events on a shared control-step axis.
-
-Plotting needs only the CSV and Matplotlib, not MuJoCo. --regenerate first reruns the
-audit (scripts/audit_palm_clearance.py, about a minute) into results/regenerated/ and
-reports any difference from the committed data; it never replaces the committed data.
-See data/validation/README.md.
-
-Usage:
-    python scripts/plot_palm_clearance.py [--data-dir DIR] [--figures-dir DIR]
-    python scripts/plot_palm_clearance.py --regenerate
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -82,6 +65,10 @@ def load(data_dir: Path) -> list[dict]:
     return rows
 
 
+# Plotting needs only the CSV and Matplotlib, not MuJoCo. --regenerate first reruns the
+# audit (scripts/audit_palm_clearance.py, about a minute) into results/regenerated/ and
+# reports any difference from the committed data; it never replaces the committed data.
+# See data/validation/README.md.
 def regenerate(data_dir: Path) -> None:
     out = REGENERATED_DIR / DATASET
     print(f"Regenerating {out.relative_to(ROOT)} ...", flush=True)
@@ -244,6 +231,10 @@ def plot_sequence(ax, grasp, strategy, x_max, show_xlabel) -> None:
         ax.set_xlabel("Control step since the grasp started (20 Hz)")
 
 
+# Panel A: minimum signed palm-block clearance over each grasp, centre vs raised grasp
+# point, for each of the 16 configurations. Panel B: clearance through the grasp for the
+# configuration where the raised grasp came closest, one row per grasp point, each with
+# its own phase boundaries and contact events on a shared control-step axis.
 def plot(rows: list[dict]) -> plt.Figure:
     data = grasps(rows)
     configs = list(dict.fromkeys(r["config"] for r in rows))

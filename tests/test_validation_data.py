@@ -1,5 +1,3 @@
-"""Checks on the committed Stage 1 validation datasets; none of these need MuJoCo."""
-
 import itertools
 import subprocess
 import sys

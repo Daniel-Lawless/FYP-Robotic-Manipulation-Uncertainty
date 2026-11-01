@@ -1,8 +1,3 @@
-"""Tests for the scripted top grasp on the stock Lift cube (needs MuJoCo).
-
-CI skips tests/sim/; run locally with `pytest tests/sim`.
-"""
-
 import numpy as np
 import pytest
 

@@ -1,8 +1,3 @@
-"""Tests for the custom tabletop environment (needs MuJoCo).
-
-CI skips tests/sim/; run locally with `pytest tests/sim`.
-"""
-
 import dataclasses
 
 import numpy as np

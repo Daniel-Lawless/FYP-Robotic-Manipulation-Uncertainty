@@ -1,20 +1,3 @@
-"""Figures for the Stage 1 top-grasp findings, from the committed experiment CSVs.
-
-Figure 1 (yaw switch): the 45-degree condition of data/validation/yaw_switch.csv, one
-point per seed and observation perturbation.
-Figure 2 (finger gap): the paired 50-seed data/validation/grasp_alignment.csv, with the
-finger span a rigid, unrotated cube would produce, from its recorded size.
-
-Plotting needs only the CSVs and Matplotlib, not MuJoCo. --regenerate first reruns both
-experiments (about 5 minutes) into results/regenerated/, which git ignores, and reports
-any difference from the committed data other than wall-clock time; it never replaces
-the committed data. See data/validation/README.md.
-
-Usage:
-    python scripts/plot_grasp_figures.py [--data-dir DIR] [--figures-dir DIR] [--pdf]
-    python scripts/plot_grasp_figures.py --regenerate
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -78,6 +61,10 @@ def load(data_dir: Path, name: str) -> list[dict]:
     return rows
 
 
+# Plotting needs only the CSVs and Matplotlib, not MuJoCo. --regenerate first reruns both
+# experiments (about 5 minutes) into results/regenerated/, which git ignores, and reports
+# any difference from the committed data other than wall-clock time; it never replaces
+# the committed data. See data/validation/README.md.
 def regenerate(data_dir: Path) -> None:
     """Rerun both experiments into REGENERATED_DIR and compare with data_dir."""
     for name, command in DATASETS.items():
@@ -105,6 +92,8 @@ def save(fig, name: str, figures_dir: Path, pdf: bool) -> None:
     plt.close(fig)
 
 
+# Figure 1 (yaw switch): the 45-degree condition of data/validation/yaw_switch.csv, one
+# point per seed and observation perturbation.
 def plot_yaw_switch(rows: list[dict]) -> plt.Figure:
     rows = [r for r in rows if float(r["delta_deg"]) == 45.0]
     true_rel = [float(r["true_rel_deg"]) for r in rows]
@@ -201,6 +190,8 @@ def plot_yaw_switch(rows: list[dict]) -> plt.Figure:
     return fig
 
 
+# Figure 2 (finger gap): the paired 50-seed data/validation/grasp_alignment.csv, with the
+# finger span a rigid, unrotated cube would produce, from its recorded size.
 def plot_finger_gap(rows: list[dict]) -> plt.Figure:
     seeds = sorted({int(r["seed"]) for r in rows})
     paired = {(int(r["seed"]), r["controller"]): r for r in rows}

@@ -1,5 +1,3 @@
-"""Scene configuration and seeded layout sampling (pure NumPy; runs in CI)."""
-
 import numpy as np
 import pytest
 
