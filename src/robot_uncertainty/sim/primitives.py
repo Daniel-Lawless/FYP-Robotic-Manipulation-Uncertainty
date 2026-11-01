@@ -8,6 +8,8 @@ import numpy as np
 import robosuite.utils.transform_utils as T
 from robosuite.environments.base import MujocoEnv
 
+from robot_uncertainty.sim.actions import execution_heading
+
 GRIPPER_OPEN, GRIPPER_CLOSED = -1.0, 1.0
 
 # Grip-site orientation for a top grasp at yaw 0: approach axis (site z) pointing straight
@@ -103,6 +105,10 @@ class GraspResult:
     sim_time: float = 0.0  # simulated seconds
     wall_time: float = 0.0  # seconds
     grasp_height: float = 0.0  # grasp point above the observed object centre, metres
+    # True horizontal body axis (0 or 1) most aligned with the closing heading decided
+    # before the grasp (the legacy selection when no heading was given), at the start.
+    # Privileged evaluation information: not for policy or outcome-model inputs.
+    commanded_face_axis: int = -1
 
     @property
     def lift_height(self) -> float:
@@ -213,6 +219,7 @@ def top_grasp(
     lift_height: float = 0.10,
     min_lift: float = 0.05,
     grasp_height: float = 0.0,
+    closing_heading: float | None = None,
 ) -> GraspResult:
     """Grasp an object from above at its observed pose and lift it.
 
@@ -225,6 +232,10 @@ def top_grasp(
     judged from the true pose of object_body: after the hold, the object has risen at
     least min_lift, is still between the fingers, and the fingers have not closed on
     nothing.
+
+    closing_heading, if given, is a finger-closing heading decided beforehand (an
+    actions.GraspAction); the wrist then follows actions.execution_heading on
+    object_yaw instead of the least-rotation face pair.
     """
     arm = OSCArm(env)
     body_id = arm.model.body(object_body).id
@@ -236,8 +247,15 @@ def top_grasp(
 
     true_start_yaw = box_yaw(true_object_rot())
     start_yaw = heading(arm.eef_rot())
-    grasp_yaw = aligned_grasp_yaw(object_yaw, start_yaw, symmetry)
+    if closing_heading is None:
+        grasp_yaw = aligned_grasp_yaw(object_yaw, start_yaw, symmetry)
+        commanded_heading = grasp_yaw
+    else:
+        grasp_yaw = execution_heading(closing_heading, object_yaw, start_yaw)
+        commanded_heading = closing_heading
     grasp_rot = top_down_rotation(grasp_yaw)
+    commanded = [np.cos(commanded_heading), np.sin(commanded_heading), 0.0]
+    commanded_face_axis = int(np.argmax(np.abs(true_object_rot()[:, :2].T @ commanded)))
 
     # Adding a zero offset is exact, so grasp_height=0 reproduces the Lift results.
     grasp_pos = object_pos + [0.0, 0.0, grasp_height]
@@ -287,4 +305,5 @@ def top_grasp(
         sim_time=float(arm.data.time - start_sim),
         wall_time=time.perf_counter() - start_wall,
         grasp_height=float(grasp_height),
+        commanded_face_axis=commanded_face_axis,
     )

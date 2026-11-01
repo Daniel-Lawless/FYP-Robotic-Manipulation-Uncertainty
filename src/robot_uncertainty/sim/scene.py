@@ -44,6 +44,20 @@ class BlockSpec:
         return cross_section_symmetry(self.size)
 
 
+# Distractors for explicit diagnostic scenes (M1.3a), with the target's default density
+# and friction; dataclasses.replace(preset, name=...) gives further copies. Hypotheses to
+# check against contact data, not guaranteed effects: the short one (6 cm) reaches into
+# the fingers' corridor beside a gripped 8 cm target but stays under the palm, whose
+# underside is about 8.6 cm above the table at the raised grasp point; the tall one
+# (11 cm) reaches the palm and the upper hand.
+DISTRACTOR_SHORT = BlockSpec(
+    "distractor", size=(0.05, 0.05, 0.06), role="distractor", rgba=(0.2, 0.45, 0.85, 1.0)
+)
+DISTRACTOR_TALL = BlockSpec(
+    "distractor", size=(0.05, 0.05, 0.11), role="distractor", rgba=(0.9, 0.75, 0.15, 1.0)
+)
+
+
 @dataclass(frozen=True)
 class Region:
     """Axis-aligned rectangle on the table: x_range and y_range are (min, max)."""
@@ -137,6 +151,96 @@ def footprint_corners(block: BlockSpec, placement: Placement) -> np.ndarray:
     local = np.array([[hx, hy], [-hx, hy], [-hx, -hy], [hx, -hy]])
     c, s = np.cos(placement.yaw), np.sin(placement.yaw)
     return local @ np.array([[c, s], [-s, c]]) + placement.xy
+
+
+def _edge_normals(polygon: np.ndarray) -> np.ndarray:
+    edges = np.roll(polygon, -1, axis=0) - polygon
+    normals = np.stack([-edges[:, 1], edges[:, 0]], axis=1)
+    return normals / np.linalg.norm(normals, axis=1, keepdims=True)
+
+
+def _edges(polygon: np.ndarray):
+    return zip(polygon, np.roll(polygon, -1, axis=0), strict=True)
+
+
+def _point_segment_distance(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    ab = b - a
+    t = np.clip((p - a) @ ab / (ab @ ab), 0.0, 1.0)
+    return float(np.linalg.norm(p - (a + t * ab)))
+
+
+def footprint_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Signed distance between two convex footprints given as (n, 2) vertex arrays.
+
+    Positive: the shortest distance between them (exact). Zero: touching. Negative:
+    they overlap, by minus the smallest separating-axis penetration depth (a lower bound
+    on how far one must move to separate them). The separating-axis test checks the edge
+    normals of both polygons, which is exact for convex polygons such as rotated
+    rectangles.
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    gaps = []
+    for normal in np.concatenate([_edge_normals(a), _edge_normals(b)]):
+        pa, pb = a @ normal, b @ normal
+        gaps.append(max(pb.min() - pa.max(), pa.min() - pb.max()))
+    if max(gaps) < 0.0:
+        return float(max(gaps))
+    # Separated (or touching): the closest points include a vertex of one polygon.
+    return min(
+        min(_point_segment_distance(p, *e) for p in a for e in _edges(b)),
+        min(_point_segment_distance(p, *e) for p in b for e in _edges(a)),
+    )
+
+
+# Distances below this count as touching, so rounding in rotated corners cannot turn
+# touching footprints into overlapping ones (or a requested gap into a violation).
+FOOTPRINT_TOLERANCE = 1e-9
+
+
+def footprints_overlap(a: np.ndarray, b: np.ndarray, clearance: float = 0.0) -> bool:
+    """Whether two convex footprints ((n, 2) vertices, e.g. footprint_corners) come
+    closer than clearance. Touching footprints do not overlap at zero clearance.
+
+    Exact for oriented rectangles (separating-axis test, then the true distance), unlike
+    the enclosing-circle check of the random sampler; meant for explicit layouts.
+    """
+    return footprint_distance(a, b) < clearance - FOOTPRINT_TOLERANCE
+
+
+def footprint_circle_distance(polygon: np.ndarray, center, radius: float) -> float:
+    """Distance from a convex footprint ((n, 2) vertices in either winding) to a disc;
+    zero or less where they intersect (-radius if the disc's centre is inside)."""
+    polygon, center = np.asarray(polygon, dtype=float), np.asarray(center, dtype=float)
+    sides = np.einsum("ij,ij->i", center - polygon, _edge_normals(polygon))
+    if np.all(sides >= 0.0) or np.all(sides <= 0.0):
+        return -radius
+    return min(_point_segment_distance(center, *e) for e in _edges(polygon)) - radius
+
+
+def place_beside(
+    target_placement: Placement,
+    target_spec: BlockSpec,
+    other_spec: BlockSpec,
+    gap: float,
+    direction_heading: float,
+    other_yaw: float,
+) -> Placement:
+    """Placement of other_spec beside a target, gap metres away along a heading.
+
+    The other block's centre lies on the ray from the target's centre at
+    direction_heading, far enough that the two footprints, projected onto that
+    direction, are gap apart. When the facing sides are perpendicular to the direction
+    (e.g. direction_heading a face normal of the target and other_yaw equal to the
+    target's yaw, modulo pi/2), that is the face-to-face gap and the true distance
+    between the footprints; otherwise the true distance is at least gap.
+    """
+    u = np.array([np.cos(direction_heading), np.sin(direction_heading)])
+    reach_target = (
+        footprint_corners(target_spec, Placement(0.0, 0.0, target_placement.yaw)) @ u
+    ).max()
+    reach_other = -(footprint_corners(other_spec, Placement(0.0, 0.0, other_yaw)) @ u).min()
+    x, y = target_placement.xy + (reach_target + gap + reach_other) * u
+    return Placement(float(x), float(y), float(other_yaw))
 
 
 def placement_is_valid(

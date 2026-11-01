@@ -22,8 +22,18 @@ from robot_uncertainty.sim.scene import (
     Placement,
     TabletopConfig,
     cross_section_symmetry,
+    footprint_circle_distance,
+    footprint_corners,
+    footprints_overlap,
     sample_layout,
 )
+
+# Limits for a valid initial scene after settling (check_initial_state); the speeds are
+# the at-rest tolerances of the placement check.
+INITIAL_MAX_LINEAR_SPEED = 0.005  # m/s
+INITIAL_MAX_ANGULAR_SPEED = 0.05  # rad/s
+INITIAL_MAX_BLOCK_PENETRATION = 0.0001  # m, between two blocks
+INITIAL_MAX_TILT = np.radians(2.0)
 
 
 @dataclass(frozen=True)
@@ -32,6 +42,7 @@ class ObjectObservation:
     position: np.ndarray  # world (x, y, z) of the block's centre, metres
     yaw: float  # heading of a side-face normal (see primitives.box_yaw), radians
     size: np.ndarray  # full (x, y, z) extent, metres
+    role: str  # BlockSpec.role, e.g. "target" or "distractor"
 
 
 @dataclass(frozen=True)
@@ -182,6 +193,69 @@ class TabletopEnv(ManipulationEnv):
         self.sim.data.set_joint_qvel(joint, np.zeros(6))
         self.sim.forward()
 
+    def set_layout(self, placements: dict[str, Placement]) -> None:
+        """Place blocks explicitly (diagnostic scenes), upright and at rest.
+
+        Blocks not named keep their current placement in self.layout. The resulting
+        layout is checked first, exactly (oriented rectangles, see scene.footprint_distance):
+        every footprint on the table, none overlapping another (touching is allowed),
+        none intersecting the goal circle. Raises ValueError and changes nothing if a
+        check fails; nothing is adjusted. Settle afterwards, then check_initial_state.
+        """
+        unknown = set(placements) - set(self.blocks)
+        if unknown:
+            raise ValueError(f"no such blocks in the scene: {sorted(unknown)}")
+        layout = {**self.layout, **placements}
+        specs = {b.name: b for b in self.config.blocks}
+        corners = {n: footprint_corners(specs[n], p) for n, p in layout.items()}
+        half = np.asarray(self.config.table_size[:2]) / 2
+        goal = self.config.goal
+        problems = []
+        for n, c in corners.items():
+            if np.any(np.abs(c) > half):
+                problems.append(f"{n} extends beyond the table")
+            if footprint_circle_distance(c, goal.center, goal.radius) <= 0.0:
+                problems.append(f"{n} intersects the goal")
+        names = list(corners)
+        for i, a in enumerate(names):
+            for b in names[i + 1 :]:
+                if footprints_overlap(corners[a], corners[b]):
+                    problems.append(f"{a} overlaps {b}")
+        if problems:
+            raise ValueError("invalid layout: " + "; ".join(problems))
+        for n, p in placements.items():
+            self.set_block_pose(n, p)
+        self.layout = layout
+
+    def check_initial_state(self) -> list[str]:
+        """Problems that make the current state an invalid start for an attempt; empty
+        if valid: every block at rest (INITIAL_MAX_*_SPEED), upright within
+        INITIAL_MAX_TILT, and no two blocks interpenetrating by more than
+        INITIAL_MAX_BLOCK_PENETRATION. Call after settling.
+        """
+        model, data = self.sim.model._model, self.sim.data._data
+        problems = []
+        for obj in self.true_state().objects:
+            rot = np.zeros(9)
+            mujoco.mju_quat2Mat(rot, obj.quaternion)
+            tilt = float(np.arccos(np.clip(rot[8], -1.0, 1.0)))
+            if np.linalg.norm(obj.linear_velocity) > INITIAL_MAX_LINEAR_SPEED:
+                problems.append(
+                    f"{obj.name} moving at {np.linalg.norm(obj.linear_velocity):.4f} m/s"
+                )
+            if np.linalg.norm(obj.angular_velocity) > INITIAL_MAX_ANGULAR_SPEED:
+                problems.append(
+                    f"{obj.name} turning at {np.linalg.norm(obj.angular_velocity):.4f} rad/s"
+                )
+            if tilt > INITIAL_MAX_TILT:
+                problems.append(f"{obj.name} tilted {np.degrees(tilt):.2f} deg")
+        owner = {model.geom(g).id: n for n, obj in self.blocks.items() for g in obj.contact_geoms}
+        for contact in data.contact[: data.ncon]:
+            a, b = owner.get(contact.geom1), owner.get(contact.geom2)
+            if a and b and a != b and -contact.dist > INITIAL_MAX_BLOCK_PENETRATION:
+                problems.append(f"{a} and {b} interpenetrate by {-1000 * contact.dist:.3f} mm")
+        return problems
+
     # --- scene queries -------------------------------------------------------------
 
     def block_body(self, name: str) -> str:
@@ -212,6 +286,7 @@ class TabletopEnv(ManipulationEnv):
                 position=data.body_xpos[self.block_body_ids[spec.name]].copy(),
                 yaw=box_yaw(data.body_xmat[self.block_body_ids[spec.name]].reshape(3, 3)),
                 size=np.asarray(spec.size, dtype=float),
+                role=spec.role,
             )
             for spec in self.config.blocks
         )
@@ -261,13 +336,18 @@ class TabletopEnv(ManipulationEnv):
 
 
 def grasp_block_from_above(
-    env: TabletopEnv, name: str, grasp_height: float | None = None, lift_height: float = 0.10
+    env: TabletopEnv,
+    name: str,
+    grasp_height: float | None = None,
+    lift_height: float = 0.10,
+    closing_heading: float | None = None,
 ) -> GraspResult:
     """Observe a block and run the scripted top grasp on it, planned from the observation.
 
     The grasp height comes from the observed block height (top_grasp_height) unless
-    given; lift_height is how far the grasp point is raised. Success is still judged
-    from the true state inside top_grasp.
+    given; lift_height is how far the grasp point is raised; closing_heading, if given,
+    is a decided finger-closing heading (see top_grasp). Success is still judged from
+    the true state inside top_grasp.
     """
     target = env.observe().object(name)
     if grasp_height is None:
@@ -280,9 +360,36 @@ def grasp_block_from_above(
         symmetry=cross_section_symmetry(target.size),
         grasp_height=grasp_height,
         lift_height=lift_height,
+        closing_heading=closing_heading,
     )
 
 
 def make_tabletop_env(config: TabletopConfig | None = None, seed: int = 0, **kwargs) -> TabletopEnv:
     """A headless TabletopEnv; kwargs override robosuite settings, e.g. to add a viewer."""
     return TabletopEnv(config, seed=seed, **kwargs)
+
+
+def hand_footprint_half_extent(env: TabletopEnv) -> tuple[float, float]:
+    """Half-extents of the hand's top-down footprint in the grip-site frame, metres:
+    along the finger-closing axis (site x) and across it (site y), over the hand's and
+    fingers' collision meshes at the current finger opening (about 104 x 32 mm for the
+    robosuite 1.5.2 Panda hand, set by the palm; open fingers reach about 66 mm).
+    """
+    model, data = env.sim.model._model, env.sim.data._data
+    site = env.robots[0].eef_site_id["right"]
+    origin, rot = data.site_xpos[site], data.site_xmat[site].reshape(3, 3)
+    extent = np.zeros(2)
+    for g in range(model.ngeom):
+        collides = model.geom_contype[g] or model.geom_conaffinity[g]
+        if not (model.geom(g).name.startswith("gripper0_") and collides):
+            continue
+        if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh = model.geom_dataid[g]
+            first = model.mesh_vertadr[mesh]
+            verts = model.mesh_vert[first : first + model.mesh_vertnum[mesh]]
+        else:  # boxes (the finger pads): their eight corners
+            signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+            verts = signs * model.geom_size[g]
+        world = verts @ data.geom_xmat[g].reshape(3, 3).T + data.geom_xpos[g]
+        extent = np.maximum(extent, np.abs((world - origin) @ rot)[:, :2].max(axis=0))
+    return float(extent[0]), float(extent[1])
